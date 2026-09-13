@@ -5,10 +5,11 @@ articles behind it, carries each source's [Wikipedia quality
 grade](https://en.wikipedia.org/wiki/Wikipedia:Content_assessment), and flags weak
 sources inline.
 
-> **Status: in development.** The agent answers questions end to end as of Phase 5.
-> Deterministic source rendering with inline quality flags (Phase 7), multi-turn
-> conversation (Phase 8) and the CLI (Phase 12) are still to come — see
-> [project-plan.md](project-plan.md) for the full plan and the thirteen build phases.
+> **Status: in development.** The agent answers questions end to end (Phase 5) and is
+> measurable against a graded dataset (Phase 6). Deterministic source rendering with
+> inline quality flags (Phase 7), multi-turn conversation (Phase 8) and the full CLI
+> (Phase 12) are still to come — see [project-plan.md](project-plan.md) for the plan and
+> the thirteen build phases.
 
 ## What it does
 
@@ -173,11 +174,44 @@ CI, or in a watch mode. Run the paid smoke check explicitly:
 ANTHROPIC_API_KEY=sk-ant-... WIKIMEDIA_AGENT_CONTACT=you@example-domain.org pytest -m eval -s
 ```
 
-The scoped eval harness arrives in Phase 6:
+## Evaluating the agent
+
+Evals score the agent against a graded dataset. They spend money, so they are never part
+of `pytest`, never in CI, and refuse to run the whole set unless you ask for it:
 
 ```bash
 python -m evals.run --category single-hop --limit 5
 ```
+
+The runner prints the entry count and an estimated cost **before** starting, asks for
+confirmation, and reports actual spend on finishing:
+
+```
+Entries:        5
+Agent model:    claude-opus-5
+Judge model:    claude-sonnet-5
+Estimated cost: ~$0.42
+Proceed? [y/N]
+```
+
+Useful flags:
+
+| Flag | Effect |
+|---|---|
+| `--category single-hop` | One category only |
+| `--split test` | The held-out split (never tuned against) |
+| `--limit 5` | At most this many entries |
+| `--no-judge` | Deterministic scores only — cheaper, no judge calls |
+| `--all` | The full set; for release checkpoints |
+| `--yes` | Skip the confirmation prompt |
+
+Each run writes a timestamped JSON report to `evals/reports/`, stamped with a
+`judge_version`. **Scores from different judge versions are never compared** — re-judge
+the stored transcripts instead.
+
+Most scoring is deterministic and free: citation validity, provenance integrity, source
+disclosure, refusal and clarification behaviour are all computed from the transcript in
+code. Only answer correctness needs a judge call.
 
 ## Trying it out so far
 
@@ -274,6 +308,7 @@ QUALITY: Start -- Developing but quite incomplete. This is a low-quality source.
 | Command-line entry point | `src/wikimedia_agent/__main__.py` |
 | Typed error hierarchy | `src/wikimedia_agent/errors.py` |
 | TTL response cache | `src/wikimedia_agent/cache.py` |
+| Eval harness — dataset, scorers, judge, runner | `evals/` |
 | Constraint compliance checks | `tests/compliance/` |
 | Offline unit tests | `tests/unit/` |
 | Live API checks (opt-in) | `tests/integration/` |

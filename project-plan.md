@@ -793,9 +793,11 @@ wikimedia-agent/
 └── evals/
     ├── dataset.jsonl      # graded question set + short conversations
     ├── calibration.jsonl  # hand-graded entries; gates judge changes
+    ├── models.py          # entries, transcripts, scores, reports
     ├── judge.py           # versioned judge: prompt, rubric, structured output
     ├── scorers.py         # deterministic scorers (free, re-runnable)
-    └── run_eval.py        # scoped runner + cost reporting
+    ├── cost.py            # pricing, estimates, spend tracking
+    └── run.py             # scoped runner (`python -m evals.run`)
 ```
 
 ---

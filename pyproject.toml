@@ -31,6 +31,9 @@ wikimedia-agent = "wikimedia_agent.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+wikimedia_agent = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
@@ -62,7 +65,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
 [tool.mypy]
 python_version = "3.9"
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "evals"]
 warn_unreachable = true
 
 # Strict where it protects the boundary; relaxed in tests, where over-annotating

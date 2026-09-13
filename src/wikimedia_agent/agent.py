@@ -17,7 +17,7 @@ from anthropic import Anthropic
 from .errors import ConfigurationError
 from .prompts import SYSTEM_PROMPT
 from .provenance import Grade, Provenance
-from .tools import WikipediaTools, build_tools
+from .tools import ToolCall, WikipediaTools, build_tools
 
 DEFAULT_MODEL = "claude-opus-5"
 """C1: an Anthropic model via the Anthropic API. Agent and judge are configured
@@ -37,8 +37,14 @@ class Answer:
     sources: list[Provenance]
     grades: dict[int, Grade]
     stop_reason: str | None
+    tool_calls: list[ToolCall] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
+
+    @property
+    def searched(self) -> bool:
+        """Whether the agent retrieved anything at all before answering."""
+        return bool(self.tool_calls)
 
     @property
     def cited_articles(self) -> list[str]:
@@ -85,6 +91,7 @@ class WikipediaAgent:
 
         self.tools.retrievals.clear()
         self.tools.grades.clear()
+        self.tools.calls.clear()
 
         runner = self.client.beta.messages.tool_runner(
             model=self.model,
@@ -115,6 +122,7 @@ class WikipediaAgent:
             sources=list(self.tools.retrievals),
             grades=dict(self.tools.grades),
             stop_reason=stop_reason,
+            tool_calls=list(self.tools.calls),
             input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
             output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
         )

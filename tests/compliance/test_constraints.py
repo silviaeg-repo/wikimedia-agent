@@ -169,3 +169,48 @@ def test_the_request_goes_to_the_anthropic_messages_api():
     from wikimedia_agent.agent import DEFAULT_MODEL
 
     assert DEFAULT_MODEL.startswith("claude-")
+
+
+# -- §5: paid calls never run by accident ---------------------------------
+
+
+def test_eval_runner_is_not_collected_by_pytest():
+    """evals/ must not be a test path: a paid runner picked up by pytest would
+    spend money on every commit."""
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text()
+    testpaths_line = next(
+        line for line in pyproject.splitlines() if line.startswith("testpaths")
+    )
+    assert "evals" not in testpaths_line
+
+
+def test_the_eval_marker_is_declared():
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text()
+    assert '"eval:' in pyproject or "eval:" in pyproject
+
+
+def test_paid_tests_are_marked_eval():
+    """Any test that can spend money must carry the marker that excludes it."""
+    paid = REPO_ROOT / "tests" / "integration" / "test_agent_smoke.py"
+    text = paid.read_text()
+    assert "pytestmark = pytest.mark.eval" in text
+
+
+def test_ci_excludes_paid_and_networked_layers():
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    assert "not integration and not eval" in workflow
+
+
+def test_the_calibration_set_covers_both_verdicts():
+    """A calibration set that only contains passes cannot detect a judge that
+    passes everything."""
+    from evals.models import iter_jsonl
+
+    entries = list(iter_jsonl(REPO_ROOT / "evals" / "calibration.jsonl"))
+    assert entries, "calibration set must not be empty"
+    verdicts = {
+        value
+        for entry in entries
+        for value in entry["expected"].values()
+    }
+    assert verdicts == {True, False}, "calibration needs both passing and failing cases"
