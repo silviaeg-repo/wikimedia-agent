@@ -225,7 +225,7 @@ def test_eviction_is_reported_rather_than_silent():
     session.ask("two")
     note = session.history_note
     assert note is not None
-    assert "no longer in context" in note
+    assert "dropped" in note
 
 
 def test_no_eviction_note_before_anything_is_dropped():
@@ -302,3 +302,142 @@ def test_an_empty_question_is_rejected(question):
     session = make_session(api)
     with pytest.raises(ValueError):
         session.ask(question)
+
+
+# -- the token budget (§2.5, Phase 9) --------------------------------------
+
+
+def long_reply(words=400):
+    return reply("Ada Lovelace was a mathematician. " * words + "[[Benjamin Franklin]]")
+
+
+def test_history_stays_within_the_token_budget():
+    api = RecordedAnthropic(long_reply())
+    session = make_session(api, token_budget=500)
+    for index in range(6):
+        session.ask(f"question {index}")
+    assert session.history_tokens <= 500
+
+
+def test_answers_are_compacted_before_exchanges_are_dropped():
+    """Shedding bulk should cost detail before it costs a referent."""
+    api = RecordedAnthropic(long_reply())
+    session = make_session(api, token_budget=400)
+    session.ask("one")
+    session.ask("two")
+    assert session.compacted_turns >= 1
+
+
+def test_user_turns_are_never_compacted():
+    """A user turn is short and carries the referent a later pronoun needs."""
+    api = RecordedAnthropic(long_reply())
+    session = make_session(api, token_budget=300)
+    session.ask("Who was Ben Franklin?")
+    session.ask("And later?")
+
+    user_messages = [m["content"] for m in session.history if m["role"] == "user"]
+    assert "Who was Ben Franklin?" in user_messages or session.evicted_turns > 0
+    assert not any(str(c).startswith("[Earlier answer") for c in user_messages)
+
+
+def test_a_compacted_answer_keeps_its_subject_and_source_numbers():
+    api = RecordedAnthropic(
+        fetch("Benjamin Franklin"),
+        reply("Benjamin Franklin was an American polymath. [[Benjamin Franklin]] " + "x " * 900),
+        reply("A second answer."),
+    )
+    session = make_session(api, token_budget=200)
+    session.ask("Who was Ben Franklin?")
+    session.ask("And later?")
+
+    compacted = [
+        str(m["content"]) for m in session.history
+        if str(m["content"]).startswith("[Earlier answer")
+    ]
+    assert compacted, "the long answer should have been compacted"
+    assert "cited: Benjamin Franklin" in compacted[0]
+    assert "American polymath" in compacted[0]
+    assert "[[" not in compacted[0], "citation syntax should not survive compaction"
+
+
+def test_registry_metadata_survives_budget_pressure():
+    """Metadata is tiny and always kept, so citations stay correct."""
+    api = RecordedAnthropic(
+        fetch("Benjamin Franklin"), long_reply(),
+        reply("x " * 900), reply("y " * 900), reply("z " * 900),
+    )
+    session = make_session(api, token_budget=200)
+    session.ask("one")
+    for _ in range(3):
+        session.ask("more")
+
+    assert session.marker_for(1) == 1
+    assert session.articles[1].grade is Grade.GA
+
+
+def test_an_evicted_article_is_still_citable():
+    """The provenance recorded at retrieval time is what a citation needs."""
+    api = RecordedAnthropic(
+        fetch("Benjamin Franklin"), long_reply(),
+        fetch("Benjamin Franklin", "t2"), reply("Again. [[Benjamin Franklin]]"),
+    )
+    session = make_session(api, token_budget=150)
+    session.ask("one")
+    second = session.ask("two")
+
+    assert "[1]" in second.display_text
+    assert session.articles[1].provenance.revision_id > 0
+
+
+def test_refetching_after_eviction_is_served_from_cache():
+    """Re-reading an article the conversation has shed costs no request."""
+    api = RecordedAnthropic(
+        fetch("Benjamin Franklin"), reply("A. [[Benjamin Franklin]]"),
+        fetch("Benjamin Franklin", "t2"), reply("B. [[Benjamin Franklin]]"),
+    )
+    session = make_session(api, token_budget=100)
+    session.ask("one")
+    misses_after_first = session.agent.tools.client.cache.misses
+    session.ask("two")
+    assert session.agent.tools.client.cache.misses == misses_after_first
+
+
+def test_no_note_when_history_fits():
+    api = RecordedAnthropic(reply("Short."))
+    session = make_session(api, token_budget=100_000)
+    session.ask("one")
+    session.ask("two")
+    assert session.history_note is None
+
+
+def test_the_note_reports_compaction_as_well_as_eviction():
+    api = RecordedAnthropic(long_reply())
+    session = make_session(api, token_budget=300)
+    for index in range(4):
+        session.ask(f"question {index}")
+
+    note = session.history_note
+    assert note is not None
+    assert "shortened" in note or "dropped" in note
+    assert "keep their original numbers" in note
+
+
+def test_both_bounds_are_enforced():
+    """A turn ceiling and a token budget answer different questions: how far
+    back the conversation reaches, and how much of it is carried."""
+    api = RecordedAnthropic(reply("Short answer."))
+    session = make_session(api, max_turns=3, token_budget=100_000)
+    for index in range(6):
+        session.ask(f"question {index}")
+    assert len(session.history) == 6
+    assert session.evicted_turns == 3
+
+
+def test_reset_clears_the_compaction_counter():
+    api = RecordedAnthropic(long_reply())
+    session = make_session(api, token_budget=300)
+    session.ask("one")
+    session.ask("two")
+    session.reset()
+    assert session.compacted_turns == 0
+    assert session.history_note is None

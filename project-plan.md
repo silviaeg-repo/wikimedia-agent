@@ -636,14 +636,29 @@ possible moment (principle #12: bound everything).
 
 The strategy, cheapest first:
 - **Registry metadata is tiny and always kept.** Titles, grades, revisions, markers — a
-  few hundred bytes per article. Even a long conversation keeps every entry.
-- **Article *bodies* are evictable.** When the transcript approaches a configured token
-  budget, the oldest article text is dropped from history while its registry entry stays.
-  The agent can still cite it correctly, and can re-fetch it if needed — served from the
-  §2.1 cache, so usually free.
-- **A turn limit and a token budget**, both configurable, both surfaced. When the budget
-  is hit the agent says so rather than silently forgetting: "I've dropped the full text of
-  earlier articles to stay within context — I can re-fetch if you want more detail."
+  few hundred bytes per article. Even a long conversation keeps every entry, so a
+  citation stays correct long after the turn that produced it has gone.
+- **Old answers are compacted before anything is dropped.** The oldest full answer is
+  replaced by its opening plus the articles it cited. Shedding bulk should cost detail
+  before it costs a referent.
+- **User turns are never compacted.** A user turn is short, and it is what carries the
+  referent a later pronoun resolves against — shortening "Who was Ben Franklin?" to save
+  a handful of tokens would break the follow-up it exists to support.
+- **Whole exchanges are dropped only when compaction is not enough**, oldest first.
+- **A turn ceiling and a token budget**, both configurable, both surfaced. They answer
+  different questions: how far back the conversation reaches, and how much of it is
+  carried.
+- **Re-reading is cheap.** An article shed from history is re-fetched from the §2.1
+  cache, so recovering detail costs no request.
+
+Nothing is shed silently: the agent reports what it shortened or dropped, because a user
+who does not know the agent has forgotten something cannot tell a lapse from a limit
+(principle #13).
+
+*Revised in Phase 9.* This section originally described evicting **article bodies** from
+history. Phase 8 established that bodies never enter history in the first place — only
+question and answer text does — so what the budget actually targets is the answers. The
+principle is unchanged; the thing being shed is different from what was first assumed.
 
 Server-side compaction is deliberately **not** used in v1: it is beta, and eviction keyed
 on our own registry is simpler and more predictable. Revisit if conversations routinely

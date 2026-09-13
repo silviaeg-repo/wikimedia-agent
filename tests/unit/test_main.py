@@ -260,3 +260,39 @@ def test_a_failed_question_does_not_end_the_loop(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "Failed to answer" in captured.err
     assert "Answer. [1]" in captured.out
+
+
+# -- /sources ---------------------------------------------------------------
+
+
+def test_sources_command_lists_the_session_registry(monkeypatch, capsys):
+    api = RecordedAnthropic(
+        assistant_message(
+            content=[tool_use_block("get_summary", {"title": "Gerald J. Ford"}, "t1")],
+            stop_reason="tool_use",
+        ),
+        assistant_message(content=[text_block("An answer. [[Gerald J. Ford]]")]),
+    )
+    patched_agent(monkeypatch, api, grade="Start")
+    feed(monkeypatch, ["a question", "/sources"])
+    entry.main([])
+
+    out = capsys.readouterr().out
+    assert "Articles used in this conversation" in out
+    assert "Gerald J. Ford" in out
+    assert "low-quality source" in out
+
+
+def test_sources_command_before_any_question(monkeypatch, capsys):
+    patched_agent(monkeypatch, answering_api())
+    feed(monkeypatch, ["/sources"])
+    entry.main([])
+    assert "No articles have been read" in capsys.readouterr().out
+
+
+def test_sources_command_costs_no_api_call(monkeypatch):
+    api = answering_api()
+    patched_agent(monkeypatch, api)
+    feed(monkeypatch, ["/sources"])
+    entry.main([])
+    assert api.call_count == 0

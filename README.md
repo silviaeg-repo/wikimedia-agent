@@ -109,10 +109,18 @@ Start, Stub or Unassessed stays flagged however many turns later it is cited.
 | Command | Effect |
 |---|---|
 | `/new` | Start a fresh conversation; source numbering restarts |
+| `/sources` | List every article read so far, with its quality rating (free — no API call) |
 | `/exit` | Leave (Ctrl-D and Ctrl-C also work) |
 
-Long conversations drop their oldest exchanges and say so, rather than forgetting
-silently.
+**Long conversations stay inside a context budget.** When history grows too large, the
+oldest answers are shortened to their opening plus the articles they cited, and only then
+are whole exchanges dropped — shedding bulk should cost detail before it costs a
+referent. Your own questions are never shortened, since they carry what a later pronoun
+resolves against.
+
+Nothing is shed silently. The agent says what it shortened or dropped, and an article
+that leaves the conversation is still citable and cheap to re-read — the client cache
+serves it without another request.
 
 Output:
 

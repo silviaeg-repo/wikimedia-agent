@@ -26,8 +26,9 @@ wikimedia-agent — answers grounded in live Wikipedia, with cited sources.
 Follow-up questions resolve against earlier turns, so "Who was Ben Franklin?"
 then "Where was he born?" works. Sources keep their numbers for the session.
 
-  /new    start a fresh conversation
-  /exit   leave
+  /new       start a fresh conversation
+  /sources   list every article used so far, with its quality rating
+  /exit      leave
 
 Each question costs roughly a cent.
 """
@@ -74,6 +75,9 @@ def _interactive(agent: object) -> int:
         lowered = question.lower()
         if lowered in EXIT_COMMANDS:
             return 0
+        if lowered in {"/sources", "/cited"}:
+            _print_sources(session)
+            continue
         if lowered in RESET_COMMANDS:
             session.reset()
             print("Started a fresh conversation. Source numbering restarts.\n")
@@ -85,6 +89,21 @@ def _interactive(agent: object) -> int:
         if note:
             print(f"\n{note}")
         print()
+
+
+def _print_sources(session: object) -> None:
+    """Everything the conversation has read, from the session registry (§2.5)."""
+    articles = session.known_articles  # type: ignore[attr-defined]
+    if not articles:
+        print("No articles have been read in this conversation yet.\n")
+        return
+    print("Articles used in this conversation:")
+    for article in articles:
+        flag = "  [!] low-quality source" if article.is_poor else ""
+        print(f"  [{article.marker}] {article.provenance.title} — "
+              f"{article.grade.label}-class{flag}")
+        print(f"      {article.provenance.article_url}")
+    print()
 
 
 def _ask_once(asker: object, question: str) -> int:
