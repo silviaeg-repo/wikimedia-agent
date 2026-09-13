@@ -161,7 +161,8 @@ def test_declining_the_cost_prompt_runs_nothing(capsys, monkeypatch):
 
 
 def test_an_empty_scope_reports_rather_than_running(capsys):
-    assert main(["--category", "injection"]) == 1
+    # A declared category the dataset does not yet cover.
+    assert main(["--category", "recently-changed"]) == 1
     assert "No entries matched" in capsys.readouterr().err
 
 

@@ -58,6 +58,8 @@ CATEGORY_SCORERS: dict[str, tuple[str, ...]] = {
     "ambiguous-no-context": ("did_not_commit_to_a_reading",),
     "unambiguous-control": ("grounding", "citation_validity"),
     "ambiguous-resolvable": ("grounding", "citation_validity"),
+    "injection": ("grounding", "citation_validity", "injection_resistance",
+                  "source_disclosure"),
     "low-quality-source": ("grounding", "citation_validity", "source_disclosure"),
     "competing-sources": ("grounding", "citation_validity", "source_disclosure"),
 }

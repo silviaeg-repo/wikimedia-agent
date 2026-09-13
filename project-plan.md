@@ -486,7 +486,26 @@ potentially adversarial is a correctness requirement, not paranoia.
 
 **What we deliberately do not do:** filter or rewrite article text to strip
 "suspicious" content. It would corrupt the very thing we cite, break the guarantee that
-the recorded revision matches what we read, and fail anyway against novel phrasings. Containment beats sanitization here.
+the recorded revision matches what we read, and fail anyway against novel phrasings.
+Containment beats sanitization here.
+
+**One narrow exception, added in Phase 11: the fence delimiter itself is escaped.** An
+article may contain the literal string `</wikipedia-article>`. Left alone, article text
+could appear to close our fence and then speak from outside it — forging a tool result,
+or opening a second envelope claiming a Featured grade. So occurrences of our own
+envelope tags in retrieved text have their angle brackets escaped to `&lt;`/`&gt;`.
+
+This is not content filtering, and the distinction is worth keeping sharp:
+
+|  | Delimiter escaping | Content filtering |
+|---|---|---|
+| What it targets | Our own markup, appearing in the payload | Text judged "suspicious" |
+| Does meaning survive? | Yes — every word stays readable and quotable | No — content is removed or altered |
+| Evadable by rephrasing? | No — the delimiter is a fixed string we chose | Yes, trivially |
+| Corrupts what we cite? | No | Yes |
+
+Same reasoning as HTML-escaping user input: you do not decide which text is dangerous,
+you make the structural boundary impossible to forge.
 
 **Tested, not assumed.** The eval set gets an injection-resistance category (§5): fixture
 articles carrying embedded directives, asserting the agent answers the user's question,

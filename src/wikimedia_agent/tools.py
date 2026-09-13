@@ -14,6 +14,7 @@ here:
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -116,13 +117,38 @@ class RetrievalBudget:
         self.used += 1
 
 
+ENVELOPE_KINDS = ("wikipedia-article", "wikipedia-summary")
+
+_FENCE_TOKEN = re.compile(
+    r"</?(?:" + "|".join(ENVELOPE_KINDS) + r")\b[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def _neutralise_fences(body: str) -> str:
+    """Defang any envelope tag appearing inside retrieved text.
+
+    An article can contain the literal string ``</wikipedia-article>``. Left
+    alone, it would let article text appear to close our fence and then speak
+    from outside it -- forging a tool result, or a second envelope claiming a
+    Featured grade. Rewriting the angle brackets keeps the text readable and
+    quotable while making it inert as a delimiter (§2.3).
+    """
+    return _FENCE_TOKEN.sub(lambda m: m.group(0).replace("<", "&lt;").replace(">", "&gt;"), body)
+
+
 def _envelope(kind: str, attributes: dict[str, object], body: str) -> str:
-    """Fence retrieved content and tag it with metadata it cannot forge."""
+    """Fence retrieved content and tag it with metadata it cannot forge.
+
+    The opening tag is ours and is built from API metadata only; anything in the
+    body that looks like a fence is neutralised first, so the boundary cannot be
+    forged from within.
+    """
     rendered = " ".join(f'{key}="{value}"' for key, value in attributes.items() if value != "")
     return (
         f"<{kind} {rendered}>\n"
         f"{UNTRUSTED_NOTICE}\n"
-        f"---\n{body.strip()}\n---\n"
+        f"---\n{_neutralise_fences(body.strip())}\n---\n"
         f"</{kind}>"
     )
 
