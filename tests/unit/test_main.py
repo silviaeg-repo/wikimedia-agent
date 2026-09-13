@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
 import wikimedia_agent.__main__ as entry
 from tests.helpers import (
@@ -89,9 +90,12 @@ def test_no_retrieval_is_stated_rather_than_left_blank(monkeypatch, capsys):
     assert "No Wikipedia articles were retrieved" in capsys.readouterr().out
 
 
-def test_no_arguments_prints_usage_and_fails(capsys):
-    assert entry.main([]) == 2
-    assert "python -m wikimedia_agent" in capsys.readouterr().out
+def test_no_arguments_enters_the_interactive_loop(monkeypatch, capsys):
+    """No arguments means the loop, not an error -- `--help` documents usage."""
+    patched_agent(monkeypatch, answering_api())
+    monkeypatch.setattr("builtins.input", lambda _p="": (_ for _ in ()).throw(EOFError))
+    assert entry.main([]) == 0
+    assert "wikimedia-agent" in capsys.readouterr().out
 
 
 def test_help_exits_cleanly(capsys):
@@ -119,3 +123,98 @@ def test_runtime_failure_is_reported_not_tracebacked(monkeypatch, capsys):
     monkeypatch.setattr(agent, "ask", explode)
     assert entry.main(["question"]) == 1
     assert "Failed to answer" in capsys.readouterr().err
+
+
+# -- interactive loop ------------------------------------------------------
+
+
+def feed(monkeypatch, lines):
+    """Feed scripted input to the loop's prompt."""
+    remaining = list(lines)
+
+    def fake_input(_prompt=""):
+        if not remaining:
+            raise EOFError
+        return remaining.pop(0)
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+
+def test_loop_answers_several_questions(monkeypatch, capsys):
+    fetch = assistant_message(
+        content=[tool_use_block("get_summary", {"title": "Gerald J. Ford"}, "t1")],
+        stop_reason="tool_use",
+    )
+    api = RecordedAnthropic(
+        fetch,
+        assistant_message(content=[text_block("First answer. [1]")]),
+        fetch,
+        assistant_message(content=[text_block("Second answer. [1]")]),
+    )
+    patched_agent(monkeypatch, api)
+    feed(monkeypatch, ["first question", "second question"])
+
+    assert entry.main([]) == 0
+    out = capsys.readouterr().out
+    assert "First answer" in out
+    assert "Second answer" in out
+
+
+def test_loop_warns_that_questions_are_independent(monkeypatch, capsys):
+    """Implying conversation memory we do not have would be worse than no loop."""
+    patched_agent(monkeypatch, answering_api())
+    feed(monkeypatch, [])
+    entry.main([])
+    out = capsys.readouterr().out
+    assert "no conversation memory" in out.lower()
+    assert "Phase 8" in out
+
+
+@pytest.mark.parametrize("command", ["/exit", "/quit", "exit", "QUIT"])
+def test_exit_commands_leave_cleanly(monkeypatch, capsys, command):
+    patched_agent(monkeypatch, answering_api())
+    feed(monkeypatch, [command, "never reached"])
+    assert entry.main([]) == 0
+    assert "Answer" not in capsys.readouterr().out
+
+
+def test_blank_input_is_ignored(monkeypatch, capsys):
+    api = RecordedAnthropic(
+        assistant_message(
+            content=[tool_use_block("get_summary", {"title": "Gerald J. Ford"}, "t1")],
+            stop_reason="tool_use",
+        ),
+        assistant_message(content=[text_block("Answer. [1]")]),
+    )
+    patched_agent(monkeypatch, api)
+    feed(monkeypatch, ["", "   ", "a real question"])
+    assert entry.main([]) == 0
+    assert api.call_count == 2, "blank lines must not cost an API call"
+
+
+def test_end_of_input_exits(monkeypatch):
+    patched_agent(monkeypatch, answering_api())
+    feed(monkeypatch, [])
+    assert entry.main([]) == 0
+
+
+def test_a_failed_question_does_not_end_the_loop(monkeypatch, capsys):
+    api = answering_api()
+    agent = patched_agent(monkeypatch, api)
+
+    calls = {"n": 0}
+    original = agent.ask
+
+    def flaky(question):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient upstream failure")
+        return original(question)
+
+    monkeypatch.setattr(agent, "ask", flaky)
+    feed(monkeypatch, ["first", "second"])
+
+    assert entry.main([]) == 0
+    captured = capsys.readouterr()
+    assert "Failed to answer" in captured.err
+    assert "Answer. [1]" in captured.out

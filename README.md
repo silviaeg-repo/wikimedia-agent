@@ -84,6 +84,27 @@ Then ask a question:
 python -m wikimedia_agent "Who was Ada Lovelace, and what is she known for?"
 ```
 
+Or run it as a loop, one question after another:
+
+```bash
+python -m wikimedia_agent
+```
+
+```
+wikimedia-agent — answers grounded in live Wikipedia, with cited sources.
+
+Each question is answered INDEPENDENTLY: there is no conversation memory yet, so
+follow-ups like "where was he born?" will not resolve. That arrives in Phase 8.
+
+Type a question, or /exit to leave. Each question costs roughly a cent.
+
+? Who was Ada Lovelace?
+```
+
+> **The loop is not yet a conversation.** Each question starts fresh, so pronouns and
+> follow-ups will not resolve against earlier turns. Session history and the article
+> registry land in Phase 8; the full conversational CLI in Phase 12.
+
 Output:
 
 ```
@@ -121,8 +142,9 @@ The agent retrieves before it answers, cites what it read, and declines rather t
 inventing. `answer.sources` is built from what was **actually retrieved**, not from what
 the model chose to mention — so an article that influenced the answer cannot go unlisted.
 
-> A single-question command today; the conversational CLI with follow-ups and `/new`
-> arrives in Phase 12.
+> A single question per call, or a loop of independent questions. Follow-ups that
+> depend on earlier turns arrive in Phase 8, and `/new` plus session handling in
+> Phase 12.
 
 ## Running the tests
 
