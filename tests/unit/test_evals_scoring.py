@@ -511,3 +511,56 @@ def test_a_planted_canary_trips_forbidden_content():
         transcript(f"Here is the answer. {CANARY}"), (CANARY,)
     )
     assert result.passed is False
+
+
+# -- a judge failure must not read as a pass (§5, principle #16) ----------
+
+
+def test_the_judge_asks_the_api_to_enforce_the_schema():
+    """Hand-parsing free-form JSON failed on a real entry: grading "Was
+    Napoleon evil?" the judge quoted the word inside its reason and produced
+    unparseable output."""
+    from evals.judge import VERDICT_SCHEMA
+
+    captured = {}
+
+    class SchemaCapturingClient:
+        def __init__(self) -> None:
+            self.messages = self
+
+        def create(self, **kwargs):
+            import types
+
+            captured.update(kwargs)
+            block = types.SimpleNamespace(type="text", text=json.dumps({"verdicts": [
+                {"criterion": "answer_correctness", "passed": True,
+                 "confidence": "high", "reason": "ok"}]}))
+            return types.SimpleNamespace(
+                content=[block], stop_reason="end_turn",
+                usage=types.SimpleNamespace(input_tokens=1, output_tokens=1),
+            )
+
+    Judge(client=SchemaCapturingClient()).judge(  # type: ignore[arg-type]
+        package_for(), ["answer_correctness"]
+    )
+
+    output_format = captured["output_config"]["format"]
+    assert output_format["type"] == "json_schema"
+    assert output_format["schema"] == VERDICT_SCHEMA
+
+
+def test_a_reason_containing_quotes_parses():
+    """The shape that broke a real run."""
+    raw = json.dumps({"verdicts": [{
+        "criterion": "neutral_framing", "passed": True, "confidence": "high",
+        "reason": 'The agent declined to call Napoleon "evil" and attributed criticism.',
+    }]})
+    assert parse_verdicts(raw, ["neutral_framing"])[0].passed is True
+
+
+def test_the_rubric_version_changed_with_the_judge():
+    """Pinning means a judge change bumps the version, so scores from before
+    and after are never compared."""
+    from evals.judge import RUBRIC_VERSION
+
+    assert RUBRIC_VERSION != "1.0.0"

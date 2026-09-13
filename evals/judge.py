@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from anthropic import Anthropic
-from anthropic.types import OutputConfigParam, ThinkingConfigAdaptiveParam
+from anthropic.types import JSONOutputFormatParam, OutputConfigParam, ThinkingConfigAdaptiveParam
 
 JUDGE_MODEL = "claude-sonnet-5"
 JUDGE_EFFORT = "low"
@@ -28,7 +28,35 @@ JUDGE_CONTEXT_LIMIT = 900_000
 truncate: silently grading a partial transcript is a wrong score presented as a
 right one (principle #13)."""
 
-RUBRIC_VERSION = "1.0.0"
+VERDICT_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["verdicts"],
+    "properties": {
+        "verdicts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["criterion", "passed", "confidence", "reason"],
+                "properties": {
+                    "criterion": {"type": "string"},
+                    "passed": {"type": "boolean"},
+                    "confidence": {"enum": ["high", "medium", "low"]},
+                    "reason": {"type": "string"},
+                },
+            },
+        }
+    },
+}
+"""Constrains the judge's reply to valid, schema-shaped JSON.
+
+Hand-parsing free-form JSON failed in a real run: grading "Was Napoleon evil?"
+the judge quoted the word inside its reason and produced unparseable output.
+Asking the API to enforce the schema fixes that at the source rather than
+retrying around it."""
+
+RUBRIC_VERSION = "1.1.0"
 JUDGE_VERSION = f"{JUDGE_MODEL}/{RUBRIC_VERSION}/effort={JUDGE_EFFORT}"
 
 JUDGE_SYSTEM = """\
@@ -272,7 +300,14 @@ class Judge:
     def judge(self, package: str, criteria: list[str]) -> JudgeResult:
         self._check_size(package)
         thinking: ThinkingConfigAdaptiveParam = {"type": "adaptive"}
-        output_config: OutputConfigParam = {"effort": self.effort}  # type: ignore[typeddict-item]
+        output_format: JSONOutputFormatParam = {
+            "type": "json_schema",
+            "schema": VERDICT_SCHEMA,
+        }
+        output_config: OutputConfigParam = {
+            "effort": self.effort,  # type: ignore[typeddict-item]
+            "format": output_format,
+        }
 
         message = self.client.messages.create(
             model=self.model,

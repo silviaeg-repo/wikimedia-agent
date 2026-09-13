@@ -263,10 +263,19 @@ class EntryResult:
     entry: EvalEntry
     transcript: Transcript
     scores: list[Score] = field(default_factory=list)
+    judge_error: str | None = None
+    """Set when judging could not complete. A broken judge is not a failing
+    agent, so this is reported as *incomplete* rather than scored as a failure
+    -- but the entry must not count as passed either, or the report overstates
+    what it measured (principle #16)."""
+
+    @property
+    def incomplete(self) -> bool:
+        return self.judge_error is not None
 
     @property
     def passed(self) -> bool:
-        return all(score.passed for score in self.scores)
+        return not self.incomplete and all(score.passed for score in self.scores)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -274,6 +283,8 @@ class EntryResult:
             "category": self.entry.category,
             "split": self.entry.split,
             "passed": self.passed,
+            "incomplete": self.incomplete,
+            "judge_error": self.judge_error,
             "scores": [score.to_dict() for score in self.scores],
             "transcript": self.transcript.to_dict(),
         }

@@ -130,6 +130,7 @@ class Report:
         return {
             "entries": len(self.results),
             "entries_passed": sum(1 for result in self.results if result.passed),
+            "entries_incomplete": sum(1 for result in self.results if result.incomplete),
             "by_criterion": {
                 name: {
                     **counts,
@@ -298,15 +299,21 @@ def main(argv: list[str] | None = None) -> int:
         tracker.add_agent(transcript.input_tokens, transcript.output_tokens)
 
         scores = score_deterministically(entry, transcript)
+        judge_error: str | None = None
         if judge is not None:
             try:
                 scores.extend(score_with_judge(judge, entry, transcript, tracker))
             except JudgeError as exc:
-                # A broken judge is not a failing agent, so this is reported
-                # rather than scored as zero.
-                print(f"    judge error: {exc}", file=sys.stderr)
+                # A broken judge is not a failing agent -- but the entry must
+                # not count as passed either, or the report claims a result it
+                # never obtained (principle #16).
+                judge_error = str(exc)
+                print(f"    INCOMPLETE  judge error: {exc}", file=sys.stderr)
 
-        report.results.append(EntryResult(entry=entry, transcript=transcript, scores=scores))
+        report.results.append(
+            EntryResult(entry=entry, transcript=transcript, scores=scores,
+                        judge_error=judge_error)
+        )
         for score in scores:
             label = f"{score.criterion} (judged)" if score.judged else score.criterion
             print(f"    {'PASS' if score.passed else 'FAIL'}  {label}: {score.detail}")
@@ -322,6 +329,11 @@ def main(argv: list[str] | None = None) -> int:
     print("\n" + "=" * 60)
     summary = report.summary()
     print(f"Entries passed: {summary['entries_passed']}/{summary['entries']}")
+    if summary["entries_incomplete"]:
+        print(
+            f"Entries incomplete: {summary['entries_incomplete']} "
+            "(judging failed -- not scored, and not counted as passed)"
+        )
     for name, counts in summary["by_criterion"].items():
         print(f"  {name:24} {counts['passed']}/{counts['total']}  ({counts['rate']:.0%})")
     latency = report.latency_stats

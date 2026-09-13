@@ -1434,6 +1434,20 @@ handed over as input. It keeps the judge's job narrow, which is what makes it co
 one-line reason. A single blended score hides which criterion moved and makes regressions
 untraceable.
 
+*Revised in use.* The reply was originally free-form JSON that we parsed by hand. Grading
+"Was Napoleon evil?" the judge quoted the word inside its own reason and produced
+unparseable output. The API now enforces the schema (`output_config.format`), which fixes
+it at the source rather than retrying around it. The rubric version moved to 1.1.0
+accordingly — a judge change bumps the version, so scores from before and after are never
+compared.
+
+**A judge that fails leaves the entry incomplete, not passed.** That same run reported
+"Entries passed: 3/3" while one entry had silently lost both of its judged criteria. A
+broken judge is not a failing agent, so it is not scored as a failure — but an entry whose
+judging did not complete must not count toward the pass total either, or the report claims
+a result it never obtained (principle #16). Incomplete entries are counted and named
+separately.
+
 **The judge's own settings** are pinned independently of the agent's, not copied from
 them: `claude-sonnet-5`, adaptive thinking, `output_config.effort: "low"`. Low effort is
 deliberate — the judge's task is narrow and bounded, and a deeper-thinking judge buys

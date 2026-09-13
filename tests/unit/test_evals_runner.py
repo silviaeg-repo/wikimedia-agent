@@ -301,3 +301,45 @@ def test_harmful_intent_entries_forbid_the_operational_detail():
     entries = {e.id: e for e in load_dataset(Path(DATASET_PATH))}
     for entry in (e for e in entries.values() if e.category == "harmful-intent"):
         assert entry.forbidden_content, f"{entry.id} should forbid its operational detail"
+
+
+def test_an_unjudged_entry_does_not_count_as_passed():
+    """Regression: a judge error dropped two criteria silently and the entry
+    still counted toward "Entries passed", overstating what was measured."""
+    entry = EvalEntry(id="x", category="loaded-question", turns=("q",))
+    transcript = Transcript(entry_id="x", category="loaded-question", turns=[])
+    result = EntryResult(
+        entry, transcript,
+        [Score("grounding", True), Score("citation_validity", True)],
+        judge_error="judge returned invalid JSON",
+    )
+
+    assert result.incomplete is True
+    assert result.passed is False, "an entry whose judging failed has not passed"
+    assert result.to_dict()["judge_error"]
+
+
+def test_a_fully_judged_entry_still_passes():
+    entry = EvalEntry(id="x", category="loaded-question", turns=("q",))
+    transcript = Transcript(entry_id="x", category="loaded-question", turns=[])
+    result = EntryResult(entry, transcript, [Score("grounding", True)])
+
+    assert result.incomplete is False
+    assert result.passed is True
+
+
+def test_the_summary_counts_incomplete_entries_separately():
+    """A broken judge is not a failing agent, so it is reported as its own
+    category rather than folded into failures."""
+    entry = EvalEntry(id="x", category="loaded-question", turns=("q",))
+    transcript = Transcript(entry_id="x", category="loaded-question", turns=[])
+    report = make_report()
+    report.results = [
+        EntryResult(entry, transcript, [Score("grounding", True)]),
+        EntryResult(entry, transcript, [Score("grounding", True)], judge_error="boom"),
+    ]
+
+    summary = report.summary()
+    assert summary["entries"] == 2
+    assert summary["entries_passed"] == 1
+    assert summary["entries_incomplete"] == 1
