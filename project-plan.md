@@ -478,7 +478,7 @@ potentially adversarial is a correctness requirement, not paranoia.
    content are reported, not obeyed. If an article appears to contain directives aimed
    at an AI reader, the agent may mention that as an observation about the article — it
    is factual — but must not act on it.
-4. **Limits live below the model** (principle #17). Retrieved text influencing a tool
+4. **Limits live below the model** (principle #18). Retrieved text influencing a tool
    argument still cannot exceed a cap, because caps are enforced in the client (§2.1),
    not by prompt instruction. Injection cannot widen a search limit or bypass a deadline.
 5. **Provenance and grade are API-derived**, so injected text cannot forge a citation,
@@ -742,18 +742,27 @@ wins and the scope shrinks.
    - **A test that needs a live model is a design smell.** It usually means logic that
      belongs in deterministic code has leaked into the prompt. Move it down rather than
      paying to test it.
-16. **Measure before optimizing.** Model choice, effort level, and cost decisions come
+16. **A measurement that fails correct behaviour is worse than no measurement.**
+    A false alarm does not cost one wrong number — it makes every other number in the
+    report suspect, and it trains everyone reading it to ignore failures. So when a
+    scorer and reality disagree, fix the scorer before doubting the agent; two scorers
+    disagreeing about the same behaviour means one of them is broken. This bounds
+    principle #15: prefer a deterministic check, but only where it can actually be
+    correct. Where the thing being measured has no reliable surface form — a refusal
+    can be phrased any number of ways — judge it, or check something narrower and exact
+    instead. A precise check on less is worth more than a loose check on everything.
+17. **Measure before optimizing.** Model choice, effort level, and cost decisions come
    from eval numbers, not intuition.
-17. **Tool arguments are untrusted.** The model chooses them and retrieved content can
+18. **Tool arguments are untrusted.** The model chooses them and retrieved content can
     influence that choice. The client validates and clamps every argument; limits are
     enforced server-side of the boundary, never by prompt instruction alone.
-18. **Constraints outrank principles.** C1 and C2 (§0) are assignment requirements, not
+19. **Constraints outrank principles.** C1 and C2 (§0) are assignment requirements, not
     trade-offs. Any principle below that conflicts with them loses, and compliance is
     enforced by tests rather than by care.
-19. **All retrieval is ours.** No hosted search, no server-side fetch tool, no managed
+20. **All retrieval is ours.** No hosted search, no server-side fetch tool, no managed
     RAG. The agent's only route to the world is the Wikipedia client in §2.1 — which is
     also what makes every answer auditable.
-20. **The judge is a fixed instrument, not a prompt.** A judge configured separately from
+21. **The judge is a fixed instrument, not a prompt.** A judge configured separately from
     the agent — `claude-sonnet-5` grading `claude-opus-5`, so it is not marking its own
     tier's homework — and pinned as one versioned unit: same model,
     prompt, rubric and settings — applied systematically across every category, receiving
@@ -762,7 +771,7 @@ wins and the scope shrinks.
     resolved, whether poor sources were flagged). It rules only on what needs judgement;
     everything checkable is checked in code. Scores from different judge versions are
     never compared — re-judge the stored transcripts instead (§5).
-21. **Don't build for hypotheticals.** The provider is fixed by C1, so we depend on the
+22. **Don't build for hypotheticals.** The provider is fixed by C1, so we depend on the
     Anthropic SDK directly rather than wrapping it in a port for a second provider that
     the assignment forbids. Abstractions earn their place by solving a problem we
     actually have — the §2.1 Wikipedia boundary does; a model-provider port did not.
