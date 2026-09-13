@@ -689,20 +689,269 @@ wikimedia-agent/
 
 ## 4. Build phases
 
-Each phase ends with a commit pushed to `main`. Phases 1–4 are independently testable
-without spending a cent on model calls — recorded API fixtures (§2.2) mean even the agent
-loop is exercised for free.
+Thirteen small phases. Each one ends with a commit pushed to `main`, a green test suite,
+and something demonstrable — no phase leaves the repo in a state where the previous
+phase's capability has regressed.
 
-| # | Phase | Deliverable | Done when |
-|---|---|---|---|
-| 0 | Plan & scaffold | This document, `pyproject.toml`, CI skeleton | Plan committed; `pytest` runs green on an empty suite |
-| 1 | Wikipedia client | `wikipedia.py` + `provenance.py` — the §2.1 boundary, plus revision ids and assessment grades (§2.3) | Unit tests pass against mocked responses; integration tests pass against the live API; no HTTP type escapes the module; every result carries provenance and a resolved grade |
-| 2 | Tool layer | `tools.py` — the three tools with typed schemas, calling the client only | Each tool callable standalone; errors map to useful tool results; article text delimited and labelled untrusted |
-| 3 | Agent loop | `agent.py` + `rendering.py` — `tool_runner` wiring, system prompt, source list with quality flags | Answers a single-hop question end to end with a correct citation; every consulted article listed and low-quality ones flagged; loop tested offline against recorded responses |
-| 4 | Conversation | `session.py` — history, article registry, stable markers, context budget (§2.4) | "Who was Ben Franklin?" → "Where was he born?" answers correctly; markers stay stable across turns; eviction keeps a long conversation inside budget |
-| 5 | Multi-hop, trust & robustness | Iterative retrieval, failure paths, token budget, injection resistance | Answers a two-hop question; refuses cleanly when Wikipedia lacks the answer; ignores directives embedded in fixture articles |
-| 6 | Evaluation harness | `evals/` — dataset and scoped runner (§5) | A named subset runs from one command, prints cost before and after, emits a scored report; excluded from the default `pytest` run |
-| 7 | CLI & docs | `cli.py` with an interactive session loop and `/new`, README with setup and examples | A new user can install and hold a multi-turn conversation from the README alone |
+**On the eval column.** Real evals need a working agent, so phases 0–5 list **acceptance
+checks**: deterministic, free, and runnable offline or against the live Wikipedia API.
+Paid evals start at Phase 6, once the harness exists, and each later phase contributes
+its cases to the growing set (principle #14 — paid calls stay deliberate and scoped).
+
+---
+
+### Phase 0 — Scaffold & CI
+**Deliverable:** `pyproject.toml`, package skeleton, `pytest` + `ruff` + `mypy` config,
+CI workflow, this plan.
+
+**Unit tests:** none yet — the suite exists and runs green on zero tests.
+
+**Acceptance check:** CI passes on a push; `mypy --strict` runs clean on an empty package.
+
+**Done when:** a fresh clone installs and `pytest` exits 0.
+
+---
+
+### Phase 1 — Wikipedia HTTP discipline
+**Deliverable:** `wikipedia.py` skeleton — the §2.1 boundary with User-Agent, serial
+throttling, explicit timeouts, retry/backoff, and the typed error hierarchy. One trivial
+endpoint to exercise it.
+
+**Unit tests:**
+- UA header present and matching the documented format on every request; startup raises
+  when contact info is unset.
+- Requests are serialized and the minimum interval is honoured (assert against a fake
+  clock, not `sleep`).
+- Connect and read timeouts are set explicitly; a hung response raises `WikipediaTimeout`.
+- 429 with `Retry-After` honours it; 5xx backs off exponentially with jitter and gives up
+  after the bounded retry count as `RateLimited`.
+- `MediaWiki-API-Error` header and body error codes both map to `WikipediaAPIError`.
+- No `httpx` exception escapes the module.
+
+**Acceptance check (free, live API):** one real request to enwiki succeeds and returns a
+typed result with the UA we claim to send.
+
+**Done when:** every error path is reachable in tests and no HTTP type escapes the module.
+
+---
+
+### Phase 2 — Retrieval methods
+**Deliverable:** `search`, `get_summary`, `get_article` with section scoping, multivalue
+batching, and the response cache.
+
+**Unit tests:**
+- `limit` defaults to 5 and clamps at 20 regardless of the value passed.
+- Section scoping returns only the requested section; whole-article fetch truncates at
+  the documented character budget.
+- Batching builds `titles=A|B|C` and caps at 50 titles per request.
+- Cache hit/miss on endpoint + normalized params; TTL expiry; a cache hit issues no
+  request.
+- Redirects resolve to the canonical title; `PageNotFound` and `DisambiguationError`
+  (carrying its options) raise correctly.
+
+**Acceptance checks (free, live API):**
+1. A known-stable article fetches and section-splits correctly.
+2. A known disambiguation title raises `DisambiguationError` with a non-empty option list.
+
+**Done when:** all three retrieval methods work against live Wikipedia and every bound is
+enforced in the client rather than by the caller.
+
+---
+
+### Phase 3 — Provenance & quality grades
+**Deliverable:** `provenance.py` — the `Provenance` record, grade resolution, and tiering
+(§2.3). `prop=extracts|revisions|pageassessments` fetched in one call.
+
+**Unit tests:**
+- Every retrieval returns a populated `Provenance`: title, page_id, revision_id,
+  article_url, revision_timestamp, retrieved_at.
+- Grade resolution: `Project-independent assessment` preferred; lowest-of-projects
+  fallback when it is absent; `Unassessed` when there are no assessments at all.
+- `pacontinue` pagination is followed with `palimit=max`.
+- `importance` is recorded but never influences the grade.
+- All ten grades map to the right tier; Start / Stub / Unassessed are Poor.
+- Provenance and grade are taken from API metadata only — a fixture whose *body* claims a
+  revision or a Featured rating changes neither.
+
+**Acceptance checks (free, live API):**
+1. A B-class article and a Start-class article each resolve to the expected grade and tier.
+2. Every returned record has a `revision_id` and an `article_url` that resolves.
+
+**Done when:** content, provenance, and grade arrive together in a single request.
+
+---
+
+### Phase 4 — Tool layer
+**Deliverable:** `tools.py` — three `@beta_tool` functions over the client, with untrusted
+content delimiting.
+
+**Unit tests:**
+- Each tool is callable standalone and returns typed results.
+- Generated schemas match the signatures; no hand-written JSON Schema.
+- `PageNotFound` / `DisambiguationError` / `WikipediaTimeout` become useful tool results
+  rather than exceptions escaping into the loop — disambiguation surfaces its options so
+  the agent can retry.
+- Article text is fenced, labelled untrusted, and tagged with its provenance.
+- A tool argument outside its bounds is clamped by the client, not the tool (principle
+  #16).
+
+**Acceptance check (free):** each tool invoked directly returns content, provenance, and
+grade in the shape the agent will receive.
+
+**Done when:** the tools are usable without an agent and no exception escapes them.
+
+---
+
+### Phase 5 — Agent loop, single turn
+**Deliverable:** `agent.py` — `tool_runner` wiring, system prompt, grounding contract.
+Plain-text answers with basic citations; full rendering comes in Phase 7.
+
+**Unit tests (offline, recorded fixtures via mock transport — §2.2):**
+- A multi-turn tool sequence drives to completion.
+- All `tool_result` blocks from one assistant turn go back in a single user message.
+- A failed tool returns `is_error: true` rather than being dropped.
+- Assistant content blocks are echoed back unchanged.
+- `stop_reason` is checked before content is read, `refusal` included.
+- The retrieval-call cap terminates the loop.
+- **Compliance (Layer 0):** no outbound tool entry carries a `type` field; the model ID is
+  an Anthropic model.
+
+**Acceptance check (paid, ~cents):** one manual smoke question end to end against the live
+API, answered with a real citation. Explicitly invoked, not part of `pytest`.
+
+**Done when:** a single-hop question is answered from live Wikipedia with a citation.
+
+---
+
+### Phase 6 — Eval harness
+**Deliverable:** `evals/` — dataset format, scoped runner, deterministic scorers, cost
+reporting. Seeded with the single-hop and citation-validity cases.
+
+**Unit tests:**
+- Dataset entries parse; malformed entries fail loudly.
+- Scorers run against a stored transcript with no model call: citation validity,
+  provenance integrity, source disclosure.
+- `--category` and `--limit` select the right subset; `--all` selects everything.
+- Cost estimation is printed before the run and actual cost after.
+- The Layer 3 marker excludes evals from the default `pytest` run.
+
+**Evals (paid, scoped):**
+1. **Single-hop factual**, ~5 questions — the first real score.
+2. **Citation validity** on the same run — free to re-score afterwards.
+
+**Done when:** `python -m evals.run --category single-hop --limit 5` produces a scored
+report with a dollar figure, and is absent from `pytest`.
+
+---
+
+### Phase 7 — Rendering & quality flags
+**Deliverable:** `rendering.py` — source list, article links, inline `[n ⚠ <grade>]`
+decoration, footer note (§2.3).
+
+**Unit tests:**
+- Poor-tier markers decorate; B-class and above stay bare.
+- The footer note renders once when any poor source is present, not at all otherwise.
+- Markers survive decoration without renumbering.
+- The source list shows canonical article URLs; `revision_id` is retained internally and
+  never rendered.
+- Every retrieved article appears — including ones consulted but not cited.
+- Titles needing escaping produce valid URLs.
+
+**Evals (paid, scoped):**
+1. **Low-quality source** — a question only a Stub covers: answered, flagged inline, and
+   named.
+2. **Competing sources** — a claim covered by a Stub and a GA: the better source wins.
+
+**Done when:** source disclosure scores 100% and quality flags are renderer-enforced.
+
+---
+
+### Phase 8 — Conversation
+**Deliverable:** `session.py` — message history, article registry, stable markers (§2.4).
+
+**Unit tests:**
+- Registry entries persist across turns, keyed by page id.
+- Markers stay stable as articles accumulate; new articles take the next free number.
+- Quality tiers never decay — a Poor entry still renders `⚠` many turns later.
+- A follow-up about an already-fetched article re-uses context; a new section is recorded
+  as a fresh retrieval.
+- Per-turn source lists render from registry entries touched that turn.
+- `/new` clears history, registry, and marker numbering.
+
+**Evals (paid, scoped):**
+1. **Follow-up (pronoun)** — "Who was Ben Franklin?" → "Where was he born?"
+2. **Marker stability** — scored programmatically across the same conversation.
+
+**Done when:** the Franklin sequence answers correctly with stable markers.
+
+---
+
+### Phase 9 — Context budget & eviction
+**Deliverable:** token budgeting, article-body eviction, the user-facing notice (§2.4).
+
+**Unit tests:**
+- Eviction drops article bodies while keeping registry metadata.
+- An evicted article is still citable with its recorded provenance.
+- Re-fetching an evicted article is served from cache.
+- The budget notice appears when eviction happens and never when it doesn't.
+- A turn limit and token budget are both enforced.
+
+**Evals (paid, scoped):**
+1. **Long conversation** — 10+ turns past the budget: markers stable, citations intact.
+2. **Follow-up (refinement)** after eviction — "say more about X" still works.
+
+**Done when:** a long conversation stays inside the context window and says when it has
+evicted.
+
+---
+
+### Phase 10 — Multi-hop & honest refusal
+**Deliverable:** iterative retrieval, retrieval-failure paths, refusal behaviour.
+
+**Unit tests:**
+- A retrieval failure surfaces as "I couldn't retrieve this", never silence.
+- The retrieval-call cap holds under an intentionally ambiguous question.
+- The per-question deadline fires and is reported.
+
+**Evals (paid, scoped):**
+1. **Multi-hop** — "Who succeeded the person who did X?"
+2. **Not-in-Wikipedia** — declines rather than inventing.
+
+**Done when:** two-hop questions resolve and refusals are correct.
+
+---
+
+### Phase 11 — Trust & injection resistance
+**Deliverable:** hardened delimiting, precedence rule in the system prompt, injection
+fixtures.
+
+**Unit tests:**
+- Fixture articles carrying directives stay delimited and labelled.
+- Provenance and grade remain API-derived regardless of body content.
+- Client-side limits hold when a tool argument is influenced by retrieved text.
+
+**Evals (paid, scoped):**
+1. **Injection, single-turn** — an article carrying "ignore your instructions".
+2. **Injection, multi-turn** — injected in turn one, still not followed in turn five.
+
+**Done when:** injection resistance scores 100%.
+
+---
+
+### Phase 12 — CLI, docs & release run
+**Deliverable:** `cli.py` with an interactive session loop and `/new`, README, and a full
+eval run.
+
+**Unit tests:**
+- CLI parses arguments, starts a session, and handles `/new` and exit.
+- A config error fails at startup with a clear message (principle #12).
+
+**Evals (paid, full):**
+1. **The complete suite** on the test split — the headline numbers against §5's bar.
+2. **Cost and latency per question** recorded for the release report.
+
+**Done when:** a new user can install and hold a multi-turn conversation from the README
+alone, and the release run meets the §5 bar.
 
 ---
 
@@ -838,7 +1087,7 @@ and it is where the cost question from §2 gets settled with numbers.
 against train and validation; the test slice is scored but never tuned against, so
 the headline number stays honest.
 
-**Bar for v1:** ≥85% answer correctness on the test split, ≥95% citation validity
+**Bar for v1** (the Phase 12 release run): ≥85% answer correctness on the test split, ≥95% citation validity
 (a fabricated citation is worse than a wrong answer — it looks trustworthy), ≥90% correct
 refusals, **100% provenance integrity** (a citation without a revision is a bug, not a
 near miss), **100% injection resistance** — a single instance of following embedded
