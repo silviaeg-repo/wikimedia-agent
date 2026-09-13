@@ -8,13 +8,36 @@ sources inline.
 All thirteen build phases are complete. See [project-plan.md](project-plan.md) for the
 design, the 22 guiding principles, and the reasoning behind each decision.
 
+## Quick reference
+
+Setup once (details in [Getting started](#getting-started)):
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip && pip install -e ".[dev]"
+export WIKIMEDIA_AGENT_CONTACT="you@example-domain.org"   # required by Wikimedia policy
+export ANTHROPIC_API_KEY="sk-ant-..."                     # required to run the agent
+```
+
+| To do this | Run | Costs |
+|---|---|---|
+| Ask one question | `wikimedia-agent "Who was Ada Lovelace?"` | ~1c |
+| Hold a conversation | `wikimedia-agent` | ~1c per question |
+| Run the test suite | `pytest` | free, offline |
+| Check against live Wikipedia | `pytest -m integration` | free |
+| Lint and type-check | `ruff check . && mypy` | free |
+| Score the agent | `python -m evals.run --category single-hop --limit 5` | ~$0.35 |
+| Score everything | `python -m evals.run --all` | ~$1.90 |
+| Re-score past runs | `python -m evals.rescore --quiet` | free |
+
 ## What it does
 
 - Answers natural-language questions from **English Wikipedia**, retrieved live.
 - **Cites its sources** — article, section, and a link — and says "I don't know" rather
   than inventing an answer.
-- **Grades every source** and flags anything below B-class inline, so a claim resting on
-  a Stub is visibly different from one resting on a Featured Article.
+- **Rates every source** and flags the weak ones inline, in plain words — so a claim
+  resting on a two-line article is visibly different from one resting on a thorough,
+  reviewed one.
 - **Holds a conversation** — "Who was Ben Franklin?" then "Where was he born?" resolves
   correctly, with sources carried forward.
 - **Asks rather than guesses.** When a subject is ambiguous and nothing in the
@@ -290,9 +313,27 @@ Most scoring is deterministic and free: citation validity, provenance integrity,
 disclosure, refusal and clarification behaviour are all computed from the transcript in
 code. Only answer correctness needs a judge call.
 
-The agent is measured against a graded dataset of 20 entries across eleven categories —
-single-hop, multi-hop, conversations, ambiguity and its control, refusals, low-quality
-sources, and adversarial injections.
+The agent is measured against a graded dataset of **28 entries across 14 categories** —
+single-hop and multi-hop questions, conversations, ambiguity and its control, honest
+refusals, low-quality sources, adversarial injections, loaded questions, and requests
+stating a harmful purpose. Several categories exist in pairs, so that fixing one failure
+mode cannot quietly create its opposite:
+
+| Category | Paired control |
+|---|---|
+| Ambiguous subject — must ask | Unambiguous — must **not** ask |
+| Loaded question — must refuse the premise | Documented criticism — must still report it |
+| Stated harmful intent — must decline | Same subject, no intent — must still answer |
+
+**Latest full run:** 28/28, every criterion at 100%, $1.62, median latency 11.7s. The
+report is committed at [`evals/reports/release.json`](evals/reports/release.json), so
+`python -m evals.rescore` works from a fresh clone.
+
+That result is worth reading with its caveat, which is in
+[project-plan.md](project-plan.md) in full: **this suite shows the absence of
+regressions, not the presence of quality.** It has not found a bug since the refusal
+scorer was fixed — every defect since was found by using the agent, not by running the
+evals.
 
 Most scoring is deterministic and free: citation validity, provenance integrity, source
 disclosure, grounding, marker stability and injection resistance are computed from a
@@ -308,6 +349,13 @@ Two rules the harness follows, both learned the hard way:
 - **Judged and deterministic scores are reported separately**, even when they share a
   criterion name. Merging them gives a denominator that means nothing.
 
+
+## How this was built
+
+The full conversation that produced this project is in
+[`docs/transcript/`](docs/transcript/) — every phase, including the decisions that were
+later reversed and why. The commit history records what changed; the transcript records
+how it was argued.
 
 ## How it's built
 
@@ -425,8 +473,12 @@ QUALITY: Start -- Developing but quite incomplete. This is a low-quality source.
 - **It cannot verify that Wikipedia is correct.** It grounds answers in what articles
   say, cites them so you can check, and surfaces each article's quality grade.
 - **Conversations do not survive a restart.** Session memory is in-process only.
-- **The eval set is 20 entries.** Enough to catch regressions, not enough to measure
-  quality; the plan's bar assumes 40–60.
+- **The eval set is 28 entries**, written by the same hand that built the agent and
+  mostly added after the behaviour already worked. Enough to catch regressions, not
+  enough to measure quality — the plan's bar assumes 40–60, and names what kinds of case
+  would make the set find things again.
+- **Answers take around 12 seconds**, and a hard one can take 30. Grounded retrieval is
+  not fast.
 
 
 ## License

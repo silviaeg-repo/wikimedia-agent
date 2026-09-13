@@ -11,4 +11,6 @@ htmlcov/
 dist/
 build/
 .env
+# Run output, except the committed release baseline.
 evals/reports/
+!evals/reports/release.json
