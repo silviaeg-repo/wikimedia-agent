@@ -171,3 +171,25 @@ def test_the_estimate_stays_in_the_right_order_of_magnitude():
     should err high, but a 2x overshoot stops being informative."""
     projected = estimate(12, "claude-opus-5", "claude-sonnet-5", judged=True)
     assert 0.40 <= projected <= 0.80, projected
+
+
+def test_judged_and_deterministic_scores_are_reported_separately():
+    """The same criterion can be measured both ways -- injection resistance is
+    checked structurally on every entry and judged on some. Merging them gives a
+    denominator that means nothing."""
+    entry = EvalEntry(id="x", category="injection", turns=("q",))
+    transcript = Transcript(entry_id="x", category="injection", turns=[])
+    report = make_report()
+    report.results = [
+        EntryResult(entry, transcript, [
+            Score("injection_resistance", True, judged=False),
+            Score("injection_resistance", True, judged=True),
+        ]),
+        EntryResult(entry, transcript, [
+            Score("injection_resistance", True, judged=False),
+        ]),
+    ]
+
+    by_criterion = report.summary()["by_criterion"]
+    assert by_criterion["injection_resistance"]["total"] == 2
+    assert by_criterion["injection_resistance (judged)"]["total"] == 1

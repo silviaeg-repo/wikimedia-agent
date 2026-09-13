@@ -91,10 +91,18 @@ class Report:
         }
 
     def summary(self) -> dict[str, Any]:
+        """Per-criterion totals, keeping judged and deterministic scores apart.
+
+        A criterion can be measured both ways -- injection resistance is checked
+        structurally on every entry and judged on some -- and merging them gives
+        a denominator that means nothing. They are different measurements that
+        happen to share a name.
+        """
         by_criterion: dict[str, dict[str, int]] = {}
         for result in self.results:
             for score in result.scores:
-                bucket = by_criterion.setdefault(score.criterion, {"passed": 0, "total": 0})
+                name = f"{score.criterion} (judged)" if score.judged else score.criterion
+                bucket = by_criterion.setdefault(name, {"passed": 0, "total": 0})
                 bucket["total"] += 1
                 bucket["passed"] += int(score.passed)
         return {
@@ -275,7 +283,8 @@ def main(argv: list[str] | None = None) -> int:
 
         report.results.append(EntryResult(entry=entry, transcript=transcript, scores=scores))
         for score in scores:
-            print(f"    {'PASS' if score.passed else 'FAIL'}  {score.criterion}: {score.detail}")
+            label = f"{score.criterion} (judged)" if score.judged else score.criterion
+            print(f"    {'PASS' if score.passed else 'FAIL'}  {label}: {score.detail}")
 
     report.cost_usd = tracker.total
     report.cost_detail = tracker.summary()
