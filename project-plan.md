@@ -93,8 +93,14 @@ ingestion pipeline, no index staleness. The cost is per-question latency. We mit
 it with caching and with batching several titles into one request — *not* with
 concurrency, which the API etiquette rules out (§2.1).
 
-**Stack:** Python 3.11+, the official `anthropic` SDK (C1), `httpx` for the Wikipedia
-calls, `pytest` for tests.
+**Stack:** Python 3.9+, the official `anthropic` SDK (C1), `httpx` for the Wikipedia
+calls, `pytest` for tests, with `ruff` and `mypy --strict` in CI.
+
+*Revised in Phase 0.* The plan originally said 3.11+. The development machine has only
+3.9 available and no package manager to install a newer one, and a floor we cannot run
+tests against is worse than a slightly lower one — the code is 3.9-compatible and runs
+unchanged on 3.11+. Phase 5 may raise the floor to 3.10+ when the `anthropic` SDK is
+pinned; that is a one-line change to `requires-python`.
 
 **Models — two, configured separately.** The agent and the eval judge are distinct
 config keys, never one shared value:

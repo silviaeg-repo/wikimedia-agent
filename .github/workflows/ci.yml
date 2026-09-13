@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check .
+      - name: Types
+        run: mypy
+      # Layers 0 and 1 (§5): offline and free. Integration and eval layers are
+      # excluded here -- integration hits the live Wikipedia API, evals cost money.
+      - name: Tests
+        run: pytest -m "not integration and not eval"

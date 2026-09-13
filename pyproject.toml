@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wikimedia-agent"
+version = "0.1.0"
+description = "A question-answering agent grounded in live Wikipedia content, with cited, quality-graded sources."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+agent = [
+    # Added in Phase 5. Pinned then; the SDK may require a higher Python floor.
+    "anthropic>=0.40",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[project.scripts]
+wikimedia-agent = "wikimedia_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    # Layer 3 (§5). Excluded from the default run: these cost money.
+    "eval: paid model calls; run explicitly via `python -m evals.run`, never in CI",
+    # Layer 2 (§5). Free, but hits the live Wikipedia API.
+    "integration: requires network access to the live Wikipedia API",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
+
+[tool.ruff.lint.per-file-ignores]
+# Nested `with` blocks read better than combined ones in tests, where the
+# assertion context is the point.
+"tests/**" = ["SIM117"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# Principle #20 / C1: vendor SDK usage stays deliberate and inside the agent layer.
+"openai".msg = "C2/§2.2: this project uses the Anthropic SDK only."
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+files = ["src", "tests"]
+warn_unreachable = true
+
+# Strict where it protects the boundary; relaxed in tests, where over-annotating
+# fixtures adds noise without catching bugs.
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
