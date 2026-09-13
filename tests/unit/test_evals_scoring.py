@@ -41,12 +41,31 @@ def retrieval(title="Ada Lovelace", revision_id=42, grade="B", poor=False, secti
     }
 
 
-def transcript(answer_text, *, retrieved=None, tool_calls=None, category="single-hop"):
+def transcript(
+    answer_text,
+    *,
+    retrieved=None,
+    tool_calls=None,
+    category="single-hop",
+    cited=None,
+    unresolved=(),
+    rendered_text=None,
+):
+    """Build a transcript.
+
+    ``cited`` and ``unresolved`` come from the renderer, which resolves the
+    model's title-based citations against what was retrieved (§2.3) -- so a
+    fabricated citation is an exact fact here, not an inference.
+    """
+    items = list(retrieved) if retrieved is not None else [retrieval()]
     turn = TurnRecord(
         question="Who was Ada Lovelace?",
         answer_text=answer_text,
+        rendered_text=rendered_text if rendered_text is not None else answer_text,
         tool_calls=tool_calls if tool_calls is not None else [{"name": "get_summary"}],
-        retrieved=list(retrieved) if retrieved is not None else [retrieval()],
+        retrieved=items,
+        cited_numbers=list(cited) if cited is not None else ([1] if items else []),
+        unresolved_citations=list(unresolved),
         stop_reason="end_turn",
         input_tokens=100,
         output_tokens=20,
@@ -72,34 +91,38 @@ def test_retrieving_first_passes_grounding():
 # -- citation validity -----------------------------------------------------
 
 
-def test_a_resolvable_marker_passes():
+def test_a_resolved_citation_passes():
     assert score_citation_validity(transcript("Ada was a mathematician. [1]")).passed is True
 
 
-def test_a_dangling_marker_fails():
-    """A marker pointing at nothing is a fabricated citation."""
-    result = score_citation_validity(transcript("Claim one. [1] Claim two. [7]"))
+def test_citing_an_article_never_retrieved_fails():
+    """The renderer could not match the title to any retrieval: a fabrication."""
+    result = score_citation_validity(
+        transcript("Claim. [1] Another claim. [?]", unresolved=["Charles Babbage"])
+    )
     assert result.passed is False
-    assert "[7]" in result.detail or "7" in result.detail
+    assert "Charles Babbage" in result.detail
 
 
 def test_citing_with_nothing_retrieved_fails():
     result = score_citation_validity(
-        transcript("Ada was a mathematician. [1]", retrieved=[], tool_calls=[])
+        transcript(
+            "Ada was a mathematician. [1]", retrieved=[], tool_calls=[], cited=[1]
+        )
     )
     assert result.passed is False
     assert "nothing retrieved" in result.detail
 
 
 def test_retrieving_but_citing_nothing_fails():
-    result = score_citation_validity(transcript("Ada was a mathematician."))
+    result = score_citation_validity(transcript("Ada was a mathematician.", cited=[]))
     assert result.passed is False
     assert "cites none" in result.detail
 
 
 def test_no_citations_and_no_retrieval_is_consistent():
     result = score_citation_validity(
-        transcript("I could not find this.", retrieved=[], tool_calls=[])
+        transcript("I could not find this.", retrieved=[], tool_calls=[], cited=[])
     )
     assert result.passed is True
 
@@ -193,6 +216,7 @@ def test_signals_report_what_code_already_knows():
     assert signals["searched_wikipedia"] is True
     assert signals["retrieval_count"] == 2
     assert signals["citation_markers_used"] == [1]
+    assert signals["citations_naming_unretrieved_articles"] == []
     assert signals["poor_quality_sources_used"] == ["Stub Article"]
     assert "get_summary" in signals["tool_calls_made"]
 

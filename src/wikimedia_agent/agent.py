@@ -17,6 +17,7 @@ from anthropic import Anthropic
 from .errors import ConfigurationError
 from .prompts import SYSTEM_PROMPT
 from .provenance import Grade, Provenance
+from .rendering import RenderedAnswer, render
 from .tools import ToolCall, WikipediaTools, build_tools
 
 DEFAULT_MODEL = "claude-opus-5"
@@ -40,6 +41,13 @@ class Answer:
     tool_calls: list[ToolCall] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
+    rendered: RenderedAnswer | None = None
+
+    @property
+    def display_text(self) -> str:
+        """The answer as a reader should see it: markers decorated, sources
+        listed, weak sources flagged (§2.3)."""
+        return self.rendered.text if self.rendered is not None else self.text
 
     @property
     def searched(self) -> bool:
@@ -132,6 +140,7 @@ class WikipediaAgent:
                 "I was unable to answer this question. The request was declined "
                 "before an answer could be produced."
             )
+            answer.rendered = render(answer.text, answer.sources, answer.grades)
             return answer
 
         answer.text = _text_of(message)
@@ -142,6 +151,8 @@ class WikipediaAgent:
             answer.text = (
                 "I could not produce an answer from Wikipedia for this question."
             )
+
+        answer.rendered = render(answer.text, answer.sources, answer.grades)
         return answer
 
 

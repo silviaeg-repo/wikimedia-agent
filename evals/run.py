@@ -113,9 +113,13 @@ def _retrieved_record(provenance: Any, grades: dict[int, Any]) -> dict[str, Any]
 
 def record_turn(question: str, answer: Any) -> TurnRecord:
     """Capture one turn as the judge will read it."""
+    rendered = answer.rendered
     return TurnRecord(
         question=question,
         answer_text=answer.text,
+        rendered_text=rendered.text if rendered else answer.text,
+        cited_numbers=rendered.cited_numbers if rendered else [],
+        unresolved_citations=list(rendered.unresolved) if rendered else [],
         tool_calls=[
             {"name": call.name, "arguments": call.arguments} for call in answer.tool_calls
         ],

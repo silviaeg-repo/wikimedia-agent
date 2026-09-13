@@ -1,0 +1,217 @@
+"""Source rendering and quality flags (§2.3, Phase 7).
+
+The point of these: a mis-flagged source is a failing unit test here, not a
+behaviour regression that only an eval run would notice.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+
+from wikimedia_agent.provenance import Grade, Provenance
+from wikimedia_agent.rendering import (
+    FOOTER_NOTE,
+    POOR_MARKER,
+    UNKNOWN_MARKER,
+    SourceRegistry,
+    render,
+)
+
+
+def prov(title="Ada Lovelace", page_id=974, revision_id=42, section=None):
+    return Provenance(
+        title=title,
+        page_id=page_id,
+        revision_id=revision_id,
+        article_url=f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}",
+        permalink=f"https://en.wikipedia.org/w/index.php?oldid={revision_id}",
+        retrieved_at=datetime.now(timezone.utc),
+        section=section,
+    )
+
+
+# -- marker decoration -----------------------------------------------------
+
+
+@pytest.mark.parametrize("grade", [Grade.FA, Grade.FL, Grade.A, Grade.GA, Grade.B, Grade.C])
+def test_adequate_and_strong_sources_render_a_bare_marker(grade):
+    out = render("A claim. [[Ada Lovelace]]", [prov()], {974: grade})
+    assert "[1]" in out.text
+    assert POOR_MARKER not in out.text.split("Sources")[0]
+
+
+@pytest.mark.parametrize("grade", [Grade.START, Grade.STUB, Grade.UNASSESSED])
+def test_poor_sources_decorate_the_inline_marker(grade):
+    """Inline, at the point of the claim -- a warning only in the source list
+    is easy to read past on a multi-claim answer."""
+    out = render("A claim. [[Ada Lovelace]]", [prov()], {974: grade})
+    body = out.text.split("Sources")[0]
+    assert f"[1 {POOR_MARKER} {grade.label}-class]" in body
+
+
+def test_an_unassessed_source_counts_as_poor():
+    """An ungraded article is an unknown, and an unknown is not an endorsement."""
+    out = render("A claim. [[Ada Lovelace]]", [prov()], {})
+    assert POOR_MARKER in out.text
+    assert out.has_poor_sources is True
+
+
+def test_only_poor_sources_are_decorated_in_a_mixed_answer():
+    """If every citation carried a marker, the marker would stop meaning anything."""
+    out = render(
+        "Good. [[Ada Lovelace]] Weak. [[Gerald J. Ford]]",
+        [prov(), prov("Gerald J. Ford", 7, 99)],
+        {974: Grade.GA, 7: Grade.START},
+    )
+    body = out.text.split("Sources")[0]
+    assert "[1]" in body
+    assert f"[2 {POOR_MARKER} Start-class]" in body
+
+
+# -- the footer note -------------------------------------------------------
+
+
+def test_the_footer_renders_once_when_a_poor_source_is_present():
+    out = render(
+        "A. [[Ada Lovelace]] B. [[Gerald J. Ford]]",
+        [prov(), prov("Gerald J. Ford", 7, 99)],
+        {974: Grade.START, 7: Grade.STUB},
+    )
+    assert out.text.count(FOOTER_NOTE) == 1
+
+
+def test_no_footer_when_every_source_is_adequate():
+    out = render("A claim. [[Ada Lovelace]]", [prov()], {974: Grade.B})
+    assert FOOTER_NOTE not in out.text
+    assert out.has_poor_sources is False
+
+
+# -- numbering -------------------------------------------------------------
+
+
+def test_numbers_follow_retrieval_order():
+    out = render(
+        "Second first. [[Charles Babbage]] Then. [[Ada Lovelace]]",
+        [prov(), prov("Charles Babbage", 5, 13)],
+        {974: Grade.B, 5: Grade.GA},
+    )
+    assert "[1] Ada Lovelace" in out.text
+    assert "[2] Charles Babbage" in out.text
+
+
+def test_the_same_article_keeps_one_number_however_often_cited():
+    out = render(
+        "A. [[Ada Lovelace]] B. [[Ada Lovelace]] C. [[Ada Lovelace]]",
+        [prov()],
+        {974: Grade.B},
+    )
+    assert out.text.split("Sources")[0].count("[1]") == 3
+    assert len(out.citations) == 1
+
+
+def test_sections_of_one_article_share_its_number():
+    """A citation refers to the article, not the section."""
+    out = render(
+        "A. [[Ada Lovelace]]",
+        [prov(section="Death"), prov(section="Work")],
+        {974: Grade.B},
+    )
+    assert len(out.citations) == 1
+
+
+def test_citation_lookup_ignores_a_section_suffix_and_case():
+    out = render("A. [[ada lovelace#Death]]", [prov()], {974: Grade.B})
+    assert "[1]" in out.text
+    assert out.unresolved == []
+
+
+# -- the source list -------------------------------------------------------
+
+
+def test_the_source_list_shows_article_urls_not_revisions():
+    """Readers want the live article; the revision is for verification only."""
+    out = render("A. [[Ada Lovelace]]", [prov()], {974: Grade.B})
+    assert "https://en.wikipedia.org/wiki/Ada_Lovelace" in out.text
+    assert "oldid=" not in out.text
+    assert "42" not in out.text.split("Sources")[1]
+
+
+def test_every_retrieved_article_is_listed_even_if_not_cited():
+    """An article that informed the answer cannot go unlisted."""
+    out = render(
+        "Only one cited. [[Ada Lovelace]]",
+        [prov(), prov("Charles Babbage", 5, 13)],
+        {974: Grade.B, 5: Grade.GA},
+    )
+    assert "Charles Babbage" in out.text
+    assert "consulted, not cited" in out.text
+
+
+def test_a_cited_article_is_not_marked_as_merely_consulted():
+    out = render("A. [[Ada Lovelace]]", [prov()], {974: Grade.B})
+    assert "consulted, not cited" not in out.text
+
+
+def test_the_source_list_names_the_section_when_scoped():
+    out = render("A. [[Ada Lovelace]]", [prov(section="Death")], {974: Grade.B})
+    assert "Ada Lovelace § Death" in out.text
+
+
+def test_every_source_line_carries_a_grade():
+    out = render(
+        "A. [[Ada Lovelace]]",
+        [prov(), prov("Gerald J. Ford", 7, 99)],
+        {974: Grade.B, 7: Grade.START},
+    )
+    assert "B-class" in out.text
+    assert "Start-class" in out.text
+
+
+# -- fabricated citations --------------------------------------------------
+
+
+def test_citing_an_article_never_retrieved_is_marked_not_dropped():
+    """Silently dropping it would hide a fabricated citation."""
+    out = render("A claim. [[Invented Article]]", [prov()], {974: Grade.B})
+    assert UNKNOWN_MARKER in out.text
+    assert out.unresolved == ["Invented Article"]
+    assert "not among the articles retrieved" in out.text
+
+
+def test_a_resolved_citation_leaves_no_unresolved_entry():
+    out = render("A. [[Ada Lovelace]]", [prov()], {974: Grade.B})
+    assert out.unresolved == []
+
+
+# -- edge cases ------------------------------------------------------------
+
+
+def test_an_answer_with_no_retrieval_renders_without_a_source_list():
+    out = render("I could not find this in Wikipedia.", [], {})
+    assert "Sources" not in out.text
+    assert out.citations == []
+
+
+def test_an_uncited_answer_still_lists_what_was_retrieved():
+    out = render("An answer with no citations.", [prov()], {974: Grade.B})
+    assert "Sources" in out.text
+    assert out.cited_numbers == []
+
+
+def test_titles_needing_escaping_produce_valid_urls():
+    out = render("A. [[Mercury (planet)]]", [prov("Mercury (planet)", 3, 5)], {3: Grade.B})
+    assert "https://en.wikipedia.org/wiki/Mercury_(planet)" in out.text
+    assert " " not in out.text.split("https://")[1].split()[0]
+
+
+def test_a_registry_assigns_numbers_once_and_never_renumbers():
+    """Phase 8 depends on this: an article keeps its number for the session."""
+    registry = SourceRegistry()
+    first = registry.register(prov(), Grade.B)
+    second = registry.register(prov("Charles Babbage", 5, 13), Grade.GA)
+    again = registry.register(prov(), Grade.B)
+
+    assert (first.number, second.number) == (1, 2)
+    assert again.number == 1

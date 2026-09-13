@@ -83,20 +83,11 @@ def _ask_once(agent: object, question: str) -> int:
         print(f"Failed to answer: {exc}", file=sys.stderr)
         return 1
 
-    print(answer.text)
+    # The renderer owns the source list and the quality flags (§2.3), so the
+    # CLI prints what it produced rather than assembling its own.
+    print(answer.display_text)
 
-    if answer.sources:
-        print("\nSources")
-        for index, source in enumerate(answer.sources, start=1):
-            grade = answer.grades.get(source.page_id)
-            label = grade.label if grade else "Unassessed"
-            flag = "  [!] low-quality source" if grade and grade.is_poor else ""
-            where = source.title
-            if source.section:
-                where = f"{where} (section: {source.section})"
-            print(f"  [{index}] {where} — {label}{flag}")
-            print(f"      {source.article_url}")
-    else:
+    if not answer.sources:
         print("\n(No Wikipedia articles were retrieved for this answer.)")
 
     print(

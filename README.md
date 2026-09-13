@@ -5,11 +5,10 @@ articles behind it, carries each source's [Wikipedia quality
 grade](https://en.wikipedia.org/wiki/Wikipedia:Content_assessment), and flags weak
 sources inline.
 
-> **Status: in development.** The agent answers questions end to end (Phase 5) and is
-> measurable against a graded dataset (Phase 6). Deterministic source rendering with
-> inline quality flags (Phase 7), multi-turn conversation (Phase 8) and the full CLI
-> (Phase 12) are still to come — see [project-plan.md](project-plan.md) for the plan and
-> the thirteen build phases.
+> **Status: in development.** The agent answers questions end to end with cited,
+> quality-flagged sources (Phase 7) and is measurable against a graded dataset (Phase 6).
+> Multi-turn conversation (Phase 8) and the full CLI (Phase 12) are still to come — see
+> [project-plan.md](project-plan.md) for the plan and the thirteen build phases.
 
 ## What it does
 
@@ -109,17 +108,34 @@ Type a question, or /exit to leave. Each question costs roughly a cent.
 Output:
 
 ```
-Ada Lovelace was an English mathematician, chiefly known for her work on
-Charles Babbage's proposed Analytical Engine. [1]
+Ada Lovelace wrote the first published algorithm intended for a machine. [1]
+A brief article describes Gerald J. Ford's later account of it. [2 ⚠ Start-class]
 
 Sources
-  [1] Ada Lovelace — B
+  [1] Ada Lovelace — B-class
       https://en.wikipedia.org/wiki/Ada_Lovelace
+  [2] Gerald J. Ford — Start-class  ⚠ low-quality source
+      https://en.wikipedia.org/wiki/Gerald_J._Ford
+  [3] Charles Babbage — GA-class  (consulted, not cited)
+      https://en.wikipedia.org/wiki/Charles_Babbage
+
+⚠ Sources marked ⚠ are rated below Wikipedia's B-class standard. Claims drawn
+from them may be incomplete or inadequately sourced.
 
 1043 input / 118 output tokens · stopped: end_turn
 ```
 
-Sources rated Start, Stub or Unassessed are marked `[!] low-quality source`.
+Three things there are produced by code, not by the model:
+
+- **The numbering.** The model cites by article title (`[[Ada Lovelace]]`); the renderer
+  assigns and keeps the numbers. The model cannot renumber or misattribute them.
+- **The `⚠` flags**, derived from the grade recorded at retrieval time. A weak source
+  cannot go unflagged because the model forgot to mention it.
+- **The source list**, built from what was actually retrieved — so an article that was
+  read but not cited still appears, marked *consulted, not cited*.
+
+A citation naming an article that was never retrieved renders as `[?]` with an explicit
+warning, rather than being silently dropped.
 
 **This is the only thing in the project that costs money** — roughly a cent a question.
 If either variable is missing, it says so and exits rather than failing mid-question.

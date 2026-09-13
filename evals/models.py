@@ -156,8 +156,11 @@ class TurnRecord:
 
     question: str
     answer_text: str
+    rendered_text: str = ""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     retrieved: list[dict[str, Any]] = field(default_factory=list)
+    cited_numbers: list[int] = field(default_factory=list)
+    unresolved_citations: list[str] = field(default_factory=list)
     stop_reason: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
@@ -166,8 +169,11 @@ class TurnRecord:
         return {
             "question": self.question,
             "answer_text": self.answer_text,
+            "rendered_text": self.rendered_text,
             "tool_calls": self.tool_calls,
             "retrieved": self.retrieved,
+            "cited_numbers": self.cited_numbers,
+            "unresolved_citations": self.unresolved_citations,
             "stop_reason": self.stop_reason,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,

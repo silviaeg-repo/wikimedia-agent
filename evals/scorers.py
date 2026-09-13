@@ -63,39 +63,39 @@ def score_retrieved_before_answering(transcript: Transcript) -> Score:
 
 
 def score_citation_validity(transcript: Transcript) -> Score:
-    """Every marker must point at an article actually retrieved.
+    """Every citation must name an article actually retrieved.
 
-    A fabricated citation is the worst failure mode here: it looks trustworthy.
+    Since the model cites by title and the renderer resolves those titles
+    (§2.3), a fabricated citation is detected exactly rather than inferred: it
+    is a title the renderer could not match to any retrieval.
     """
     turn = transcript.final
-    used = markers_in(turn.answer_text)
+    fabricated = list(turn.unresolved_citations)
+    cited = list(turn.cited_numbers)
     available = len(turn.retrieved)
 
-    if not turn.retrieved:
-        # Nothing retrieved: citing anything at all is a fabrication.
-        passed = not used
-        return Score(
-            "citation_validity",
-            passed=passed,
-            detail="no citations, nothing retrieved" if passed
-            else f"cited {sorted(used)} with nothing retrieved",
-        )
-
-    dangling = {marker for marker in used if marker < 1 or marker > available}
-    if dangling:
+    if fabricated:
         return Score(
             "citation_validity",
             passed=False,
-            detail=f"markers {sorted(dangling)} point at no retrieved article "
-            f"({available} available)",
+            detail=f"cited article(s) never retrieved: {fabricated}",
         )
-    if not used:
+    if not available:
+        return Score(
+            "citation_validity",
+            passed=not cited,
+            detail="no citations, nothing retrieved" if not cited
+            else "cited something with nothing retrieved",
+        )
+    if not cited:
         return Score(
             "citation_validity",
             passed=False,
             detail=f"{available} article(s) retrieved but the answer cites none",
         )
-    return Score("citation_validity", passed=True, detail=f"{len(used)} marker(s), all resolvable")
+    return Score(
+        "citation_validity", passed=True, detail=f"{len(cited)} citation(s), all resolvable"
+    )
 
 
 def score_provenance_integrity(transcript: Transcript) -> Score:
@@ -119,17 +119,20 @@ def score_provenance_integrity(transcript: Transcript) -> Score:
 
 
 def score_source_disclosure(transcript: Transcript) -> Score:
-    """Every article retrieved must be named in the answer.
+    """Every article retrieved must appear in the rendered source list.
 
-    Built from what was actually retrieved, not from what the model mentioned --
-    so an article that informed the answer cannot go unlisted.
+    Checked against the *rendered* answer, since the source list is built by the
+    renderer from what was actually retrieved -- not from what the model chose
+    to mention (§2.3). This is a regression check on the renderer rather than a
+    behavioural score on the model.
     """
     turn = transcript.final
     titles = retrieved_titles(turn)
     if not titles:
         return Score("source_disclosure", passed=True, detail="nothing retrieved")
 
-    missing = [title for title in titles if title and title not in turn.answer_text]
+    shown = turn.rendered_text or turn.answer_text
+    missing = [title for title in titles if title and title not in shown]
     return Score(
         "source_disclosure",
         passed=not missing,
@@ -211,7 +214,8 @@ def deterministic_signals(transcript: Transcript) -> dict[str, Any]:
             for t in transcript.turns
             for item in t.retrieved
         ],
-        "citation_markers_used": sorted(markers_in(turn.answer_text)),
+        "citation_markers_used": sorted(turn.cited_numbers),
+        "citations_naming_unretrieved_articles": list(turn.unresolved_citations),
         "citations_all_resolvable": score_citation_validity(transcript).passed,
         "all_sources_disclosed": score_source_disclosure(transcript).passed,
         "provenance_complete": score_provenance_integrity(transcript).passed,
