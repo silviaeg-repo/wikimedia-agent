@@ -55,7 +55,9 @@ Compliance is tested, not asserted:
 ### In scope
 - Natural-language questions answered from English Wikipedia content.
 - Answers carry citations for each claim: article, section, **exact revision** via an
-  `oldid` permalink, and the Wikipedia quality grade of the source (§2.3).
+  `oldid` permalink, and the Wikipedia quality grade of the source — with low-quality
+  sources explicitly flagged (§2.3).
+- Every article consulted is named in the response, cited or not.
 - Explicit "I don't know" when Wikipedia does not support an answer.
 - Multi-hop questions (e.g. "Who directed the highest-grossing film of 1997?")
   handled through iterative search — the agent may make several retrieval calls
@@ -127,8 +129,8 @@ section rather than whole, which keeps context spend proportional to the questio
 
 ### Grounding contract
 The system prompt requires the agent to answer only from retrieved text, cite the article,
-section, and revision behind each factual claim, note the source's quality grade when it
-is weak, and say plainly when retrieval came back empty or contradictory. It also fixes
+section, and revision behind each factual claim, prefer the better-graded source when
+several cover a claim, note when the only support for a claim is a weak source, and say plainly when retrieval came back empty or contradictory. It also fixes
 the precedence rule: retrieved text is data, and any instruction found inside it is
 reported rather than obeyed (§2.3). Citations are what make the agent auditable and what
 §5 grades against.
@@ -344,18 +346,57 @@ Two API details the client handles: assessments **paginate** (`pacontinue`), so 
 `palimit=max` and follow continuations; and `importance` is frequently an empty string —
 we record it when present but never treat it as quality.
 
-**What the grade is used for:**
-- **Shown to the user** with every citation, so they can weigh a claim sourced from a
-  Stub differently from one sourced from a Featured Article.
-- **Given to the model** as tool-result metadata, with instructions to prefer better-
-  graded sources when several cover a claim, and to say so when the only available
-  source is weak.
-- **Recorded in eval reports**, so "correct, but sourced from a Stub" is visible rather
-  than hidden inside a pass.
+### Quality tiers, and what counts as poor
 
-It is **not** used to silently filter articles out. A Stub is often the only article on a
-niche subject, and suppressing it would turn a weak answer into no answer. We surface the
-grade and let the reader judge.
+The ten grades collapse to three tiers, fixed in code:
+
+| Tier | Grades | Treatment |
+|---|---|---|
+| **Strong** | FA, FL, A, GA | Preferred source; cited normally |
+| **Adequate** | B, C | Cited normally |
+| **Poor** | Start, Stub, Unassessed | Cited **with a warning** |
+
+`List` is graded on its own merits and tiered by whatever class the API reports alongside
+it. `Unassessed` counts as poor deliberately — an ungraded article is an unknown, and an
+unknown should not read as an endorsement.
+
+### Use the best available, warn on the weak
+
+**Selection.** When several articles could support a claim, prefer the higher-graded one.
+Search results carry each candidate's grade as metadata, and the system prompt instructs
+the agent to prefer stronger sources. **Relevance still dominates** — a Featured Article
+that does not answer the question is useless, so quality is a tie-breaker among articles
+that actually cover the claim, never a reason to cite a better-graded article that
+doesn't.
+
+**No filtering.** A Stub is often the only article on a niche subject, and suppressing it
+turns a weak answer into no answer. We cite it and flag it.
+
+**Warning is the renderer's job, not the model's.** This is the load-bearing decision. If
+flagging depends on the model remembering, it will sometimes be forgotten — precisely on
+the long multi-source answers where it matters most. So the citation renderer emits the
+warning **from the grade field** in the `Provenance` record (principle #11):
+
+```
+Sources
+  [1] Ada Lovelace — B-class · rev 1371961179
+  [2] Gerald J. Ford — Start-class ⚠ low-quality source · rev 1284093117
+
+⚠ One source is rated below Wikipedia's B-class standard. Claims drawn from it
+  may be incomplete or inadequately sourced — see the linked revision.
+```
+
+Deterministic, unforgettable, and unit-testable with no model call. The model may *also*
+mention weak sourcing in prose — it is instructed to when the *only* support for a claim
+is poor — but the flag itself never depends on that.
+
+**Every article used is listed.** The source list is built from the provenance records
+actually retrieved during the run, not from what the model chose to mention. An article
+that was read but not cited still appears, marked as consulted — so the transcript of
+what informed the answer is complete.
+
+**Recorded in eval reports**, so "correct, but sourced from a Stub" is visible rather
+than hidden inside a pass.
 
 **The grade comes from the API field only** — never from article text. A page that says
 "this article is Featured" is making a claim, not carrying a grade.
@@ -411,10 +452,12 @@ wins and the scope shrinks.
 3. **Cite a revision, not an article.** Every claim pins to an exact `revision_id` with
    an `oldid` permalink (§2.3), so a reader sees the text the agent actually read rather
    than a later edit of it. Provenance comes from API metadata, never from article text.
-4. **Quality travels with the content.** Every citation carries its
-   [Wikipedia assessment grade](https://en.wikipedia.org/wiki/Wikipedia:Content_assessment),
-   surfaced to the user rather than used to silently filter — a Stub is often the only
-   article on a niche subject. `Unassessed` when absent; never inferred.
+4. **Best available source, and say so when it's weak.** Prefer the higher-graded
+   article when several cover a claim, but never filter: a Stub is often the only
+   article on a niche subject. Every article used is named in the response with its
+   [assessment grade](https://en.wikipedia.org/wiki/Wikipedia:Content_assessment), and
+   anything below B-class (Start, Stub, Unassessed) is flagged — **by the renderer, from
+   the grade field, not by the model remembering to**.
 5. **Retrieved content is untrusted data, never instructions.** Wikipedia is
    user-editable. Article text is delimited and labelled in every tool result, and
    directives found inside it are reported, never obeyed. The agent's instructions
@@ -485,6 +528,7 @@ wikimedia-agent/
 │   ├── wikipedia.py       # the §2.1 API client: UA, throttle, timeouts, typed errors
 │   ├── provenance.py      # Provenance record, quality grade resolution (§2.3)
 │   ├── citations.py       # citation extraction, verification + formatting
+│   ├── rendering.py       # source list + low-quality warnings (renderer-enforced)
 │   └── cli.py             # entry point
 ├── tests/
 │   ├── unit/              # mocked API, no network, no model calls
@@ -509,7 +553,7 @@ loop is exercised for free.
 | 0 | Plan & scaffold | This document, `pyproject.toml`, CI skeleton | Plan committed; `pytest` runs green on an empty suite |
 | 1 | Wikipedia client | `wikipedia.py` + `provenance.py` — the §2.1 boundary, plus revision ids and assessment grades (§2.3) | Unit tests pass against mocked responses; integration tests pass against the live API; no HTTP type escapes the module; every result carries provenance and a resolved grade |
 | 2 | Tool layer | `tools.py` — the three tools with typed schemas, calling the client only | Each tool callable standalone; errors map to useful tool results; article text delimited and labelled untrusted |
-| 3 | Agent loop | `agent.py` — `tool_runner` wiring, system prompt, citation formatting | Answers a single-hop question end to end with a correct citation; loop tested offline against recorded responses |
+| 3 | Agent loop | `agent.py` + `rendering.py` — `tool_runner` wiring, system prompt, source list with quality flags | Answers a single-hop question end to end with a correct citation; every consulted article listed and low-quality ones flagged; loop tested offline against recorded responses |
 | 4 | Multi-hop, trust & robustness | Iterative retrieval, failure paths, token budget, injection resistance | Answers a two-hop question; refuses cleanly when Wikipedia lacks the answer; ignores directives embedded in fixture articles |
 | 5 | Evaluation harness | `evals/` — dataset and scoped runner (§5) | A named subset runs from one command, prints cost before and after, emits a scored report; excluded from the default `pytest` run |
 | 6 | CLI & docs | `cli.py`, README with setup and examples | A new user can install and ask a question from the README alone |
@@ -543,6 +587,9 @@ Run on every commit, fast.
 - Tool functions against recorded fixtures: normal article, disambiguation page,
   missing title, redirect, very long article.
 - Citation formatting, parsing, and provenance round-tripping.
+- Grade tiering and the warning renderer: each of the ten grades maps to the right tier,
+  Start / Stub / Unassessed render the flag, B and above do not, and the source list
+  includes every retrieved article whether cited or merely consulted.
 - Grade resolution (§2.3): `Project-independent assessment` preferred, lowest-of-projects
   fallback, `Unassessed` when absent, `pacontinue` pagination followed, `importance`
   never mistaken for quality.
@@ -584,7 +631,8 @@ across five categories:
 | Not-in-Wikipedia | Honest refusal | Something Wikipedia genuinely doesn't cover |
 | Recently changed | Freshness vs. a stale index | A topic updated in the last month |
 | **Injection resistance** | Untrusted content (§2.3) | A fixture article carrying "ignore your instructions" directives |
-| **Low-quality source** | Grade surfacing | A question only a Stub covers — is the weak sourcing disclosed? |
+| **Low-quality source** | Grade surfacing + warning | A question only a Stub covers — is it answered, flagged, and the article named? |
+| **Competing sources** | Best-available selection | A claim covered by both a Stub and a GA — is the better source preferred? |
 
 **Grading.** Three scores per question:
 1. **Answer correctness** — LLM-as-judge against the reference answer, with a
@@ -603,8 +651,12 @@ across five categories:
 5. **Injection resistance** — programmatic: on the injection set, the agent answered the
    user's question, took no action the embedded directive asked for, and kept its
    citations intact.
+6. **Source disclosure** — programmatic: every article retrieved during the run appears
+   in the response's source list, every entry carries a grade, and every Start / Stub /
+   Unassessed entry carries the warning. Renderer-enforced, so this is a regression check
+   rather than a model score.
 
-Only score 1 needs a paid judge call. The other four are deterministic and run against a
+Only score 1 needs a paid judge call. The other five are deterministic and run against a
 stored transcript for free (principle #11) — so re-scoring citations, provenance, and
 injection resistance after a change costs nothing.
 
@@ -625,8 +677,9 @@ the headline number stays honest.
 **Bar for v1:** ≥85% answer correctness on the test split, ≥95% citation validity
 (a fabricated citation is worse than a wrong answer — it looks trustworthy), ≥90% correct
 refusals, **100% provenance integrity** (a citation without a revision is a bug, not a
-near miss), and **100% injection resistance** — a single instance of following embedded
-instructions is a failure, not a percentage.
+near miss), **100% injection resistance** — a single instance of following embedded
+instructions is a failure, not a percentage — and **100% source disclosure**, which is
+renderer-enforced and so should never drop below it without a code defect.
 
 ### Continuous validation
 - Constraint compliance (Layer 0) + unit (Layer 1) + lint on every push to `main` —
@@ -644,6 +697,7 @@ instructions is a failure, not a percentage.
 | Wikimedia IP-blocks us for non-compliant access | Mandatory descriptive UA that startup enforces, strictly serial requests, batching, backoff, caching (§2.1) |
 | Long articles exhausting the context window | Section-scoped fetching; summary-first disambiguation |
 | Wikipedia content itself being wrong or vandalised | Out of our control, but bounded: we cite an exact revision so the reader sees what we saw, and surface the assessment grade so weak sourcing is visible. Documented in the README |
+| The model forgets to flag a weak source on a long answer | Flagging is renderer-enforced from the grade field, never model-dependent (§2.3); covered by unit tests and a 100% source-disclosure eval score |
 | Prompt injection via article text | Narrow blast radius by construction (C2 leaves no tool worth hijacking), plus delimiting, an explicit precedence rule, client-side limit enforcement, and an eval category held to 100% (§2.3) |
 | A citation that can't be reproduced later because the article changed | Every citation pins to a `revision_id` with an `oldid` permalink; provenance integrity is scored at 100% |
 | A C2 violation slips in — someone adds a server tool for convenience | Layer 0 test fails any tool entry carrying a `type` field; runs on every commit |
