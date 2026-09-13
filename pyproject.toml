@@ -54,8 +54,10 @@ select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
 "tests/**" = ["SIM117"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-# Principle #20 / C1: vendor SDK usage stays deliberate and inside the agent layer.
-"openai".msg = "C2/§2.2: this project uses the Anthropic SDK only."
+# C1 (§0) fixes the model provider to Anthropic, and §2.2 drops the provider
+# abstraction accordingly. Banned project-wide so a second provider fails CI
+# rather than relying on anyone remembering the constraint.
+"openai".msg = "C1/§2.2: this project uses the Anthropic SDK only."
 
 [tool.mypy]
 python_version = "3.9"
