@@ -1386,7 +1386,7 @@ short conversations scored turn by turn — across these categories:
    rather than a model score.
 
 Only scores 1 and 6 need a paid judge call. The other six are deterministic and run
-against a stored transcript for free (principle #15) — so re-scoring citations, provenance, and
+against a stored transcript for free via `python -m evals.rescore` (principle #15) — so re-scoring citations, provenance, and
 injection resistance after a change costs nothing.
 
 #### The judge

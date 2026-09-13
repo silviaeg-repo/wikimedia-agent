@@ -273,7 +273,17 @@ Useful flags:
 | `--yes` | Skip the confirmation prompt |
 
 Each run writes a timestamped JSON report to `evals/reports/`, stamped with a
-`judge_version`. **Scores from different judge versions are never compared** — re-judge
+`judge_version`. Those transcripts can be **re-scored for free**, which is the point of
+storing them — a scorer fix should not cost another eval run:
+
+```bash
+python -m evals.rescore --quiet
+```
+
+It recomputes every deterministic score against the stored transcripts, flags verdicts a
+scorer fix would have changed, and applies scorers that did not exist when the run
+happened. Judged criteria are carried through unchanged — re-judging needs a paid call.
+Transcripts older than a scorer's inputs are marked *not comparable* rather than failed. **Scores from different judge versions are never compared** — re-judge
 the stored transcripts instead.
 
 Most scoring is deterministic and free: citation validity, provenance integrity, source
