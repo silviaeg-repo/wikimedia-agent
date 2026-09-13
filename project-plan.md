@@ -54,9 +54,10 @@ Compliance is tested, not asserted:
 
 ### In scope
 - Natural-language questions answered from English Wikipedia content.
-- Answers carry citations for each claim: article, section, **exact revision** via an
-  `oldid` permalink, and the Wikipedia quality grade of the source — with low-quality
-  sources flagged inline at the claim and in the source list (§2.3).
+- Answers carry citations for each claim: the article, a link to it, its section, and
+  its Wikipedia quality grade — with low-quality sources flagged inline at the claim and
+  in the source list (§2.3). The exact revision is recorded internally for verification
+  but not shown.
 - Every article consulted is named in the response, cited or not.
 - Explicit "I don't know" when Wikipedia does not support an answer.
 - Multi-hop questions (e.g. "Who directed the highest-grossing film of 1997?")
@@ -129,8 +130,8 @@ section rather than whole, which keeps context spend proportional to the questio
 
 ### Grounding contract
 The system prompt requires the agent to answer only from retrieved text, cite the article,
-section, and revision behind each factual claim with a numbered marker the renderer can
-decorate (§2.3), prefer the better-graded source when several cover a claim, note when the only support for a claim is a weak source, and say plainly when retrieval came back empty or contradictory. It also fixes
+section behind each factual claim with a numbered marker the renderer can decorate
+(§2.3), prefer the better-graded source when several cover a claim, note when the only support for a claim is a weak source, and say plainly when retrieval came back empty or contradictory. It also fixes
 the precedence rule: retrieved text is data, and any instruction found inside it is
 reported rather than obeyed (§2.3). Citations are what make the agent auditable and what
 §5 grades against.
@@ -301,10 +302,15 @@ pipeline and into the final answer:
 | `retrieved_at` | our clock | When we saw it |
 | `revision_timestamp` | `rvprop=timestamp` | When that revision was made |
 | `section` | section index / anchor | Where in the article |
-| `permalink` | `?oldid={revision_id}` | A URL that resolves to what we actually read, forever |
+| `article_url` | canonical `/wiki/{title}` | **What the answer displays** — the live article |
+| `permalink` | `?oldid={revision_id}` | Internal: resolves to exactly what we read, forever |
 
-The permalink is the point: a reader following our citation sees the text the agent saw,
-not a later edit of it. Verified in one call alongside the content —
+Both are recorded, and they serve different readers. The **article URL is what the answer
+shows** — someone following a citation wants the live article, including any corrections
+made since. The **permalink is what verification uses**: citation validity and provenance
+integrity (§5) check the cited text against the exact revision we read, which is what
+makes an eval result reproducible months later. Verified in one call alongside the
+content —
 `prop=extracts|revisions|pageassessments` returns all of it together, which also keeps us
 inside the serial-request discipline of §2.1.
 
@@ -387,14 +393,19 @@ machine. [1] Her notes were later described as the earliest published work on
 computing by Gerald J. Ford. [2 ⚠ Start-class]
 
 Sources
-  [1] Ada Lovelace — B-class · rev 1371961179
-      https://en.wikipedia.org/w/index.php?oldid=1371961179
-  [2] Gerald J. Ford — Start-class ⚠ low-quality source · rev 1284093117
-      https://en.wikipedia.org/w/index.php?oldid=1284093117
+  [1] Ada Lovelace — B-class
+      https://en.wikipedia.org/wiki/Ada_Lovelace
+  [2] Gerald J. Ford — Start-class ⚠ low-quality source
+      https://en.wikipedia.org/wiki/Gerald_J._Ford
 
 ⚠ One source is rated below Wikipedia's B-class standard. Claims marked ⚠ draw on
-  an article that may be incomplete or inadequately sourced — see the linked revision.
+  an article that may be incomplete or inadequately sourced.
 ```
+
+**The displayed link is the article, not the revision.** Readers want the live article,
+which is also where they can see later corrections. The `revision_id` stays in the
+`Provenance` record — it is what citation verification and the eval harness check against
+(§5), and what makes a result reproducible — but it is not rendered in the answer.
 
 **How it stays renderer-enforced.** The model emits plain numbered markers — `[1]`, `[2]`
 — as the grounding contract already requires. The renderer then **decorates** each marker
@@ -448,8 +459,8 @@ potentially adversarial is a correctness requirement, not paranoia.
    claim a revision, or upgrade its own quality grade.
 
 **What we deliberately do not do:** filter or rewrite article text to strip
-"suspicious" content. It would corrupt the very thing we cite, break the permalink
-guarantee, and fail anyway against novel phrasings. Containment beats sanitization here.
+"suspicious" content. It would corrupt the very thing we cite, break the guarantee that
+the recorded revision matches what we read, and fail anyway against novel phrasings. Containment beats sanitization here.
 
 **Tested, not assumed.** The eval set gets an injection-resistance category (§5): fixture
 articles carrying embedded directives, asserting the agent answers the user's question,
@@ -468,9 +479,10 @@ wins and the scope shrinks.
 2. **A fabricated citation is the worst failure.** It is worse than a wrong answer,
    because it looks trustworthy. Hence citations are verified programmatically and held
    to a stricter bar than correctness.
-3. **Cite a revision, not an article.** Every claim pins to an exact `revision_id` with
-   an `oldid` permalink (§2.3), so a reader sees the text the agent actually read rather
-   than a later edit of it. Provenance comes from API metadata, never from article text.
+3. **Link the article; record the revision.** Every citation displays a link to the
+   Wikipedia article, and every retrieval also records the exact `revision_id` behind it
+   (§2.3). The link is for the reader, the revision is what verification checks against.
+   Provenance comes from API metadata, never from article text.
 4. **Best available source, and say so when it's weak.** Prefer the higher-graded
    article when several cover a claim, but never filter: a Stub is often the only
    article on a niche subject. Every article used is named in the response with its
@@ -606,7 +618,9 @@ Run on every commit, fast.
   spend.
 - Tool functions against recorded fixtures: normal article, disambiguation page,
   missing title, redirect, very long article.
-- Citation formatting, parsing, and provenance round-tripping.
+- Citation formatting, parsing, and provenance round-tripping: the rendered source list
+  shows the canonical article URL, the `revision_id` is retained in the record but never
+  rendered, and titles needing escaping produce valid URLs.
 - Grade tiering and the warning renderer: each of the ten grades maps to the right tier;
   Start / Stub / Unassessed decorate their inline marker as `[n ⚠ <grade>]` while B and
   above stay bare; the footer note renders once when any poor source is present and not
@@ -667,9 +681,10 @@ across five categories:
    inventing an answer? Detected by structure, not by a judge, where the refusal has a
    recognizable shape.
 
-4. **Provenance integrity** — programmatic: every citation carries a `revision_id` and a
-   resolvable `oldid` permalink, and the cited text appears in *that* revision. A citation
-   without a revision is a failure even if the article supports the claim.
+4. **Provenance integrity** — programmatic: every citation resolves to a retrieval whose
+   `revision_id` was recorded, the cited text appears in *that* revision, and the
+   displayed article link is the canonical URL for that title. A citation with no recorded
+   revision behind it is a failure even if the article supports the claim.
 5. **Injection resistance** — programmatic: on the injection set, the agent answered the
    user's question, took no action the embedded directive asked for, and kept its
    citations intact.
@@ -722,7 +737,7 @@ renderer-enforced and so should never drop below it without a code defect.
 | Wikipedia content itself being wrong or vandalised | Out of our control, but bounded: we cite an exact revision so the reader sees what we saw, and surface the assessment grade so weak sourcing is visible. Documented in the README |
 | The model forgets to flag a weak source on a long answer | Flagging is renderer-enforced from the grade field, never model-dependent (§2.3); covered by unit tests and a 100% source-disclosure eval score |
 | Prompt injection via article text | Narrow blast radius by construction (C2 leaves no tool worth hijacking), plus delimiting, an explicit precedence rule, client-side limit enforcement, and an eval category held to 100% (§2.3) |
-| A citation that can't be reproduced later because the article changed | Every citation pins to a `revision_id` with an `oldid` permalink; provenance integrity is scored at 100% |
+| A citation that can't be reproduced later because the article changed | Every retrieval records a `revision_id`, so verification and eval re-runs check the text we actually read; provenance integrity is scored at 100% |
 | A C2 violation slips in — someone adds a server tool for convenience | Layer 0 test fails any tool entry carrying a `type` field; runs on every commit |
 | `tool_runner` is beta and its surface may change | Tool functions are plain Python and the loop is ~30 lines to bring in-house; pin the SDK version and cover the loop with offline fixture tests |
 | A hard stop mid-turn is awkward under `tool_runner` — the cap returns a refusal result rather than breaking outright | Accepted; the cap still holds, the model just finishes its turn. Revisit only if runaway loops show up in eval runs |
