@@ -116,7 +116,7 @@ alike.
 
 Splitting the keys is what makes model choice measurable: eval runs can vary either side
 independently, and we decide whether a cheaper agent holds quality from numbers rather
-than upfront (principle #15). There is no provider abstraction — C1 fixes the provider, so
+than upfront (principle #17). There is no provider abstraction — C1 fixes the provider, so
 the agent depends on the Anthropic SDK directly.
 
 **Agent loop:** the Anthropic SDK's `tool_runner` (§2.2) drives the request →
@@ -1206,7 +1206,8 @@ short conversations scored turn by turn — across these categories:
    the agent declined with *"I can't answer that"* and *"I can't help with that"* — both
    correct, neither matching any phrase list worth maintaining — and the deterministic
    scorer reported FAIL while the judge correctly passed them. A heuristic that fails
-   correct behaviour is worse than none, because it erodes trust in the whole report.
+   correct behaviour is worse than none, because it erodes trust in the whole report
+   (principle #16).
 
    What code checks instead is **`forbidden_content`**: per-entry patterns describing
    what an invented answer would have to contain — a phone-number shape, a fabricated
