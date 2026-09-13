@@ -298,3 +298,88 @@ def test_an_oversized_package_fails_rather_than_truncating():
     judge = Judge(client=None, context_limit=100)  # type: ignore[arg-type]
     with pytest.raises(JudgeError, match="Refusing to truncate"):
         judge.judge("x" * 100_000, ["answer_correctness"])
+
+
+# -- judge usage is recorded, not discarded -------------------------------
+
+
+class FakeJudgeClient:
+    """A stand-in Anthropic client returning one scripted judgement."""
+
+    def __init__(self, input_tokens=5000, output_tokens=150):
+        self.messages = self
+        self._input = input_tokens
+        self._output = output_tokens
+
+    def create(self, **_kwargs):
+        import types
+
+        block = types.SimpleNamespace(type="text", text=json.dumps({
+            "verdicts": [{"criterion": "answer_correctness", "passed": True,
+                          "confidence": "high", "reason": "Matches."}]
+        }))
+        return types.SimpleNamespace(
+            content=[block],
+            stop_reason="end_turn",
+            usage=types.SimpleNamespace(
+                input_tokens=self._input, output_tokens=self._output
+            ),
+        )
+
+
+def test_judging_returns_its_token_usage():
+    """A run reporting $0.00 for a judge that plainly ran is an under-reported
+    bill -- §5 requires spend to be observed, not discovered later."""
+    judge = Judge(client=FakeJudgeClient())  # type: ignore[arg-type]
+    result = judge.judge(package_for(), ["answer_correctness"])
+
+    assert result.verdicts[0].passed is True
+    assert result.input_tokens == 5000
+    assert result.output_tokens == 150
+
+
+def test_a_judged_run_records_nonzero_judge_cost():
+    """Regression: judge usage was defined on the tracker but never recorded,
+    so reports showed judge spend as zero."""
+    from evals.cost import CostTracker
+    from evals.models import EvalEntry
+    from evals.run import score_with_judge
+
+    tracker = CostTracker(agent_model="claude-opus-5", judge_model=JUDGE_MODEL)
+    entry = EvalEntry(
+        id="x",
+        category="single-hop",
+        turns=("Who was Ada Lovelace?",),
+        reference_answer="An English mathematician.",
+        criteria=("answer_correctness",),
+    )
+
+    scores = score_with_judge(
+        Judge(client=FakeJudgeClient()),  # type: ignore[arg-type]
+        entry,
+        transcript("Answer. [1]"),
+        tracker,
+    )
+
+    assert [score.criterion for score in scores] == ["answer_correctness"]
+    assert tracker.judge_input == 5000
+    assert tracker.judge_output == 150
+    assert tracker.judge_cost > 0
+    assert tracker.total > 0
+
+
+def test_an_unjudged_entry_costs_no_judge_tokens():
+    from evals.cost import CostTracker
+    from evals.models import EvalEntry
+    from evals.run import score_with_judge
+
+    tracker = CostTracker(agent_model="claude-opus-5", judge_model=JUDGE_MODEL)
+    entry = EvalEntry(id="x", category="single-hop", turns=("q",), criteria=())
+
+    assert score_with_judge(
+        Judge(client=FakeJudgeClient()),  # type: ignore[arg-type]
+        entry,
+        transcript("Answer. [1]"),
+        tracker,
+    ) == []
+    assert tracker.judge_input == 0

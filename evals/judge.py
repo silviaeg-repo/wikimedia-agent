@@ -90,6 +90,20 @@ class JudgeError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class JudgeResult:
+    """Verdicts plus what they cost.
+
+    Usage is returned rather than discarded: a run that reports $0.00 for a
+    judge that plainly ran is an under-reported bill, and §5 requires spend to
+    be observed rather than discovered later.
+    """
+
+    verdicts: list[Verdict]
+    input_tokens: int
+    output_tokens: int
+
+
+@dataclass(frozen=True)
 class Verdict:
     criterion: str
     passed: bool
@@ -197,7 +211,7 @@ class Judge:
     def version(self) -> str:
         return f"{self.model}/{RUBRIC_VERSION}/effort={self.effort}"
 
-    def judge(self, package: str, criteria: list[str]) -> list[Verdict]:
+    def judge(self, package: str, criteria: list[str]) -> JudgeResult:
         self._check_size(package)
         thinking: ThinkingConfigAdaptiveParam = {"type": "adaptive"}
         output_config: OutputConfigParam = {"effort": self.effort}  # type: ignore[typeddict-item]
@@ -218,7 +232,12 @@ class Judge:
             for block in (getattr(message, "content", None) or [])
             if getattr(block, "type", None) == "text"
         )
-        return parse_verdicts(text, criteria)
+        usage = getattr(message, "usage", None)
+        return JudgeResult(
+            verdicts=parse_verdicts(text, criteria),
+            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+        )
 
     def _check_size(self, package: str) -> None:
         """Fail loudly rather than grade a truncated transcript."""

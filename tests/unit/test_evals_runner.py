@@ -145,3 +145,10 @@ def test_declining_the_cost_prompt_runs_nothing(capsys, monkeypatch):
 def test_an_empty_scope_reports_rather_than_running(capsys):
     assert main(["--category", "injection"]) == 1
     assert "No entries matched" in capsys.readouterr().err
+
+
+def test_the_estimate_stays_in_the_right_order_of_magnitude():
+    """Calibrated against a real run: 2 single-hop entries cost ~$0.06 for the
+    agent. An estimate should err high, but a 3x overshoot stops being useful."""
+    projected = estimate(2, "claude-opus-5", "claude-sonnet-5", judged=False)
+    assert 0.05 <= projected <= 0.15, projected

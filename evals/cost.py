@@ -15,9 +15,12 @@ PRICING_USD_PER_MTOK = {
     "claude-haiku-4-5": (1.00, 5.00),
 }
 
-TYPICAL_INPUT_TOKENS_PER_ENTRY = 12_000
-"""Rough per-entry estimate: system prompt, tool definitions, and a couple of
-retrieved articles. Used only for the up-front warning."""
+# Calibrated against the first real run (2026-09-13): single-hop entries used
+# 2,960-5,496 input and 220-519 output tokens each, growing with the number of
+# retrievals. These sit above that range, since multi-hop and conversation
+# entries retrieve more -- an estimate should err high, but not so high that it
+# stops being informative.
+TYPICAL_INPUT_TOKENS_PER_ENTRY = 8_000
 TYPICAL_OUTPUT_TOKENS_PER_ENTRY = 600
 TYPICAL_JUDGE_INPUT_TOKENS = 6_000
 TYPICAL_JUDGE_OUTPUT_TOKENS = 250

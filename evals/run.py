@@ -141,7 +141,10 @@ def score_deterministically(entry: EvalEntry, transcript: Transcript) -> list[Sc
     return [DETERMINISTIC_SCORERS[name](transcript) for name in names]
 
 
-def score_with_judge(judge: Judge, entry: EvalEntry, transcript: Transcript) -> list[Score]:
+def score_with_judge(
+    judge: Judge, entry: EvalEntry, transcript: Transcript, tracker: CostTracker
+) -> list[Score]:
+    """Judge the entry and record what judging cost."""
     criteria = [c for c in entry.criteria if c in {"answer_correctness"}]
     if not criteria:
         return []
@@ -154,10 +157,11 @@ def score_with_judge(judge: Judge, entry: EvalEntry, transcript: Transcript) -> 
         signals=deterministic_signals(transcript),
         criteria=criteria,
     )
-    verdicts = judge.judge(package, criteria)
+    result = judge.judge(package, criteria)
+    tracker.add_judge(result.input_tokens, result.output_tokens)
     return [
         Score(verdict.criterion, verdict.passed, verdict.reason, judged=True)
-        for verdict in verdicts
+        for verdict in result.verdicts
     ]
 
 
@@ -231,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         scores = score_deterministically(entry, transcript)
         if judge is not None:
             try:
-                scores.extend(score_with_judge(judge, entry, transcript))
+                scores.extend(score_with_judge(judge, entry, transcript, tracker))
             except JudgeError as exc:
                 # A broken judge is not a failing agent, so this is reported
                 # rather than scored as zero.
