@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .provenance import Grade, Provenance, Tier
+
 _HEADING = re.compile(r"^(?P<marks>={2,6})\s*(?P<title>.+?)\s*(?P=marks)$", re.MULTILINE)
 
 LEAD_SECTION = "Summary"
@@ -46,9 +48,21 @@ class Article:
     text: str
     sections: tuple[Section, ...]
     requested_title: str
+    provenance: Provenance
+    grade: Grade
+    importance: dict[str, str]
     redirected_from: str | None = None
     section_title: str | None = None
     truncated: bool = False
+
+    @property
+    def tier(self) -> Tier:
+        return self.grade.tier
+
+    @property
+    def is_poor_quality(self) -> bool:
+        """Start, Stub or Unassessed -- flagged in answers (§2.3)."""
+        return self.grade.is_poor
 
     @property
     def section_titles(self) -> tuple[str, ...]:
@@ -88,7 +102,18 @@ class Summary:
     page_id: int
     extract: str
     requested_title: str
+    provenance: Provenance
+    grade: Grade
+    importance: dict[str, str]
     redirected_from: str | None = None
+
+    @property
+    def tier(self) -> Tier:
+        return self.grade.tier
+
+    @property
+    def is_poor_quality(self) -> bool:
+        return self.grade.is_poor
 
 
 def split_sections(extract: str) -> tuple[Section, ...]:

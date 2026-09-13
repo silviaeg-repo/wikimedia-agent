@@ -24,6 +24,7 @@ import re
 import threading
 import time
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import httpx
@@ -46,6 +47,15 @@ from .models import (
     Summary,
     split_sections,
     strip_html,
+)
+from .provenance import (
+    Grade,
+    Provenance,
+    article_url,
+    collect_importance,
+    parse_timestamp,
+    permalink,
+    resolve_grade,
 )
 
 DEFAULT_API_URL = "https://en.wikipedia.org/w/api.php"
@@ -85,6 +95,25 @@ _ARTICLE_LINK = re.compile(r'<a href="/wiki/([^"#]+)"')
 _NAMESPACED = re.compile(
     r"^(Special|Help|Category|Wikipedia|File|Template|Portal|Talk|Module):",
 )
+
+
+def _merge_assessments(body: dict[str, Any], more: dict[str, Any]) -> None:
+    """Fold a continuation response's assessments into the first response."""
+    existing = {
+        str(page.get("title")): page
+        for page in body.get("query", {}).get("pages", []) or []
+        if isinstance(page, dict)
+    }
+    for page in more.get("query", {}).get("pages", []) or []:
+        if not isinstance(page, dict):
+            continue
+        target = existing.get(str(page.get("title")))
+        extra = page.get("pageassessments")
+        if target is None or not isinstance(extra, dict):
+            continue
+        merged = dict(target.get("pageassessments") or {})
+        merged.update(extra)
+        target["pageassessments"] = merged
 
 
 def _describe(item_text: str, title: str) -> str:
@@ -387,14 +416,42 @@ class WikipediaClient:
 
         params: dict[str, Any] = {
             "action": "query",
-            "prop": "extracts|pageprops",
+            # Content, revision and quality grade in a single request: three
+            # facts we always need together, and one request instead of three
+            # (§2.1 -- batch, do not parallelise).
+            "prop": "extracts|pageprops|revisions|pageassessments",
             "explaintext": 1,
             "redirects": 1,
+            "rvprop": "ids|timestamp",
+            "palimit": "max",
             "titles": "|".join(titles),
         }
         if intro_only:
             params["exintro"] = 1
-        return self.request(params)
+
+        body = self.request(params)
+        return self._follow_assessment_pages(params, body)
+
+    def _follow_assessment_pages(
+        self, params: dict[str, Any], body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge any continued `pageassessments` pages into ``body``.
+
+        Assessments paginate independently of the rest of the response: a page
+        with many WikiProjects returns a ``pacontinue`` token, and stopping at
+        the first page would silently drop projects -- which changes the
+        lowest-grade fallback in :func:`resolve_grade`.
+        """
+        continuation = body.get("continue")
+        guard = 0
+        while isinstance(continuation, dict) and "pacontinue" in continuation and guard < 10:
+            guard += 1
+            next_params = {**params, "pacontinue": continuation["pacontinue"],
+                           "continue": continuation.get("continue", "")}
+            more = self.request(next_params)
+            _merge_assessments(body, more)
+            continuation = more.get("continue")
+        return body
 
     @staticmethod
     def _redirect_map(body: dict[str, Any]) -> dict[str, str]:
@@ -475,6 +532,44 @@ class WikipediaClient:
                 break
         return options
 
+    def _provenance(
+        self,
+        page: Mapping[str, Any],
+        *,
+        requested_title: str,
+        redirected_from: str | None,
+        section: str | None = None,
+    ) -> Provenance:
+        """Build a Provenance record from API metadata only.
+
+        Nothing here reads article text: a page whose body claims a revision
+        number or a Featured rating changes neither field (§2.3).
+        """
+        revisions = page.get("revisions") or [{}]
+        revision = revisions[0] if isinstance(revisions, list) and revisions else {}
+        revision_id = int(revision.get("revid", 0) or 0)
+        title = str(page.get("title", requested_title))
+
+        return Provenance(
+            title=title,
+            page_id=int(page.get("pageid", 0) or 0),
+            revision_id=revision_id,
+            article_url=article_url(self.api_url, title),
+            permalink=permalink(self.api_url, revision_id),
+            retrieved_at=datetime.now(timezone.utc),
+            revision_timestamp=parse_timestamp(str(revision.get("timestamp", ""))),
+            requested_title=requested_title,
+            redirected_from=redirected_from,
+            section=section,
+        )
+
+    @staticmethod
+    def _quality(page: Mapping[str, Any]) -> tuple[Grade, dict[str, str]]:
+        assessments = page.get("pageassessments") or {}
+        if not isinstance(assessments, Mapping):
+            return Grade.UNASSESSED, {}
+        return resolve_grade(assessments), collect_importance(assessments)
+
     def get_summary(self, title: str) -> Summary:
         """Fetch an article's lead extract.
 
@@ -484,12 +579,19 @@ class WikipediaClient:
         body = self._fetch_pages([title], intro_only=True)
         page = self._page_or_raise(body, title)
         resolved = str(page.get("title", title))
+        redirected_from = self._redirect_map(body).get(resolved)
+        grade, importance = self._quality(page)
         return Summary(
             title=resolved,
             page_id=int(page.get("pageid", 0)),
             extract=str(page.get("extract", "")).strip(),
             requested_title=title,
-            redirected_from=self._redirect_map(body).get(resolved),
+            provenance=self._provenance(
+                page, requested_title=title, redirected_from=redirected_from
+            ),
+            grade=grade,
+            importance=importance,
+            redirected_from=redirected_from,
         )
 
     def get_article(self, title: str, section: str | None = None) -> Article:
@@ -506,6 +608,7 @@ class WikipediaClient:
         extract = str(page.get("extract", ""))
         sections = split_sections(extract)
         redirected_from = self._redirect_map(body).get(resolved)
+        grade, importance = self._quality(page)
 
         if section is not None:
             found = None
@@ -525,6 +628,14 @@ class WikipediaClient:
                 text=found.text,
                 sections=sections,
                 requested_title=title,
+                provenance=self._provenance(
+                    page,
+                    requested_title=title,
+                    redirected_from=redirected_from,
+                    section=found.title,
+                ),
+                grade=grade,
+                importance=importance,
                 redirected_from=redirected_from,
                 section_title=found.title,
             )
@@ -536,6 +647,11 @@ class WikipediaClient:
             text=extract[:MAX_ARTICLE_CHARS].strip(),
             sections=sections,
             requested_title=title,
+            provenance=self._provenance(
+                page, requested_title=title, redirected_from=redirected_from
+            ),
+            grade=grade,
+            importance=importance,
             redirected_from=redirected_from,
             truncated=truncated,
         )
@@ -556,11 +672,17 @@ class WikipediaClient:
                 continue
             resolved = str(page.get("title", ""))
             requested = origin.get(resolved, resolved)
+            grade, importance = self._quality(page)
             results[resolved] = Summary(
                 title=resolved,
                 page_id=int(page.get("pageid", 0)),
                 extract=str(page.get("extract", "")).strip(),
                 requested_title=requested,
+                provenance=self._provenance(
+                    page, requested_title=requested, redirected_from=origin.get(resolved)
+                ),
+                grade=grade,
+                importance=importance,
                 redirected_from=origin.get(resolved),
             )
         return results

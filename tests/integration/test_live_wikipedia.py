@@ -10,6 +10,7 @@ import os
 import pytest
 
 from wikimedia_agent.errors import DisambiguationError, PageNotFound
+from wikimedia_agent.provenance import Grade, Tier
 from wikimedia_agent.wikipedia import MAX_ARTICLE_CHARS, WikipediaClient
 
 pytestmark = pytest.mark.integration
@@ -95,3 +96,59 @@ def test_batch_fetches_several_titles_in_one_request():
         summaries = client.get_summaries(["Ada Lovelace", "Charles Babbage"])
     assert set(summaries) == {"Ada Lovelace", "Charles Babbage"}
     assert all(s.extract for s in summaries.values())
+
+
+# -- Phase 3 acceptance checks --------------------------------------------
+
+
+@requires_contact
+def test_known_articles_resolve_to_their_expected_grades():
+    """A B-class and a Start-class article, graded as Wikipedia grades them."""
+    with WikipediaClient(contact=CONTACT) as client:
+        summaries = client.get_summaries(["Ada Lovelace", "Gerald J. Ford", "Solar System"])
+
+    assert summaries["Ada Lovelace"].grade is Grade.B
+    assert summaries["Ada Lovelace"].tier is Tier.ADEQUATE
+    assert summaries["Ada Lovelace"].is_poor_quality is False
+
+    assert summaries["Gerald J. Ford"].grade is Grade.START
+    assert summaries["Gerald J. Ford"].tier is Tier.POOR
+    assert summaries["Gerald J. Ford"].is_poor_quality is True
+
+    assert summaries["Solar System"].grade is Grade.FA
+    assert summaries["Solar System"].tier is Tier.STRONG
+
+
+@requires_contact
+def test_every_record_has_a_revision_and_a_resolvable_article_url():
+    import httpx
+
+    with WikipediaClient(contact=CONTACT) as client:
+        article = client.get_article("Ada Lovelace")
+
+    provenance = article.provenance
+    assert provenance.is_complete
+    assert provenance.revision_id > 0
+    assert provenance.revision_timestamp is not None
+    assert provenance.article_url == "https://en.wikipedia.org/wiki/Ada_Lovelace"
+
+    # The displayed link must actually resolve.
+    response = httpx.head(
+        provenance.article_url,
+        follow_redirects=True,
+        headers={"User-Agent": client.user_agent},
+        timeout=15.0,
+    )
+    assert response.status_code == 200
+
+
+@requires_contact
+def test_content_revision_and_grade_cost_a_single_request():
+    """All three facts in one call keeps us inside the serial-request budget."""
+    with WikipediaClient(contact=CONTACT) as client:
+        before = client.cache.misses
+        article = client.get_article("Charles Babbage")
+        assert client.cache.misses - before == 1
+
+    assert article.provenance.revision_id > 0
+    assert article.grade is not Grade.UNASSESSED

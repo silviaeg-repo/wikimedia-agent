@@ -5,10 +5,10 @@ articles behind it, carries each source's [Wikipedia quality
 grade](https://en.wikipedia.org/wiki/Wikipedia:Content_assessment), and flags weak
 sources inline.
 
-> **Status: in development.** The Wikipedia client is built and tested through Phase 2 —
-> search, summaries, section-scoped articles, batching and caching. The agent itself
-> arrives in Phase 5; see [project-plan.md](project-plan.md) for the full plan and the
-> thirteen build phases.
+> **Status: in development.** The Wikipedia client is built and tested through Phase 3 —
+> search, summaries, section-scoped articles, batching, caching, plus provenance and
+> quality grades. The agent itself arrives in Phase 5; see
+> [project-plan.md](project-plan.md) for the full plan and the thirteen build phases.
 
 ## What it does
 
@@ -111,6 +111,13 @@ with WikipediaClient(contact="you@example-domain.org") as client:
     summary = client.get_summary("Ada Byron")
     print(summary.title, "<- redirected from", summary.redirected_from)
 
+    # Every result carries its Wikipedia quality grade and an exact revision.
+    for title in ["Solar System", "Gerald J. Ford"]:
+        result = client.get_summary(title)
+        flag = "  <- flagged in answers" if result.is_poor_quality else ""
+        print(f"{result.title}: {result.grade.label} ({result.tier.value}){flag}")
+        print(f"   revision {result.provenance.revision_id} | {result.provenance.article_url}")
+
     # A whole article (truncated at a budget), or one section of it.
     article = client.get_article("Ada Lovelace")
     print(article.section_titles[:5], "truncated:", article.truncated)
@@ -140,6 +147,7 @@ with WikipediaClient(contact="you@example-domain.org") as client:
 |---|---|
 | Wikipedia client — User-Agent, serial throttling, timeouts, retrieval | `src/wikimedia_agent/wikipedia.py` |
 | Typed results — search hits, articles, sections, summaries | `src/wikimedia_agent/models.py` |
+| Provenance records and quality grades | `src/wikimedia_agent/provenance.py` |
 | Typed error hierarchy | `src/wikimedia_agent/errors.py` |
 | TTL response cache | `src/wikimedia_agent/cache.py` |
 | Offline unit tests | `tests/unit/` |
@@ -156,7 +164,10 @@ Two design decisions worth knowing before reading the code:
 3. **Ambiguity is surfaced, never resolved silently.** A disambiguation page raises
    rather than returning content, carrying described candidates in the page's own order
    so the agent can ask a question a user can actually answer.
-4. **Bounds live in the client, not the caller.** Search limits, article size and batch
+4. **Provenance and quality come from API metadata, never article text.** An article
+   claiming to be Featured, or claiming a revision number, changes neither — which is
+   what stops page content from forging its own credibility.
+5. **Bounds live in the client, not the caller.** Search limits, article size and batch
    size are clamped inside `wikipedia.py`, so nothing above it — including, later, a
    model choosing tool arguments — can widen them.
 
