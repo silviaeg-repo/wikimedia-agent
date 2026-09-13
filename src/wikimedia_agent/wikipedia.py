@@ -18,7 +18,9 @@ Phase 1 establishes the request discipline the MediaWiki API asks of clients
 
 from __future__ import annotations
 
+import html
 import random
+import re
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -37,7 +39,14 @@ from .errors import (
     WikipediaError,
     WikipediaTimeout,
 )
-from .models import Article, SearchResult, Summary, split_sections, strip_html
+from .models import (
+    Article,
+    DisambiguationOption,
+    SearchResult,
+    Summary,
+    split_sections,
+    strip_html,
+)
 
 DEFAULT_API_URL = "https://en.wikipedia.org/w/api.php"
 
@@ -69,6 +78,25 @@ MAX_ARTICLE_CHARS = 24_000
 is the intended path; this stops an unscoped fetch from flooding the context."""
 
 MAX_DISAMBIGUATION_OPTIONS = 25
+"""Enough candidates to disambiguate, few enough to put in a question."""
+
+_LIST_ITEM = re.compile(r"<li\b[^>]*>(.*?)</li>", re.DOTALL)
+_ARTICLE_LINK = re.compile(r'<a href="/wiki/([^"#]+)"')
+_NAMESPACED = re.compile(
+    r"^(Special|Help|Category|Wikipedia|File|Template|Portal|Talk|Module):",
+)
+
+
+def _describe(item_text: str, title: str) -> str:
+    """Turn a list item into a short description of its candidate.
+
+    Entries read "Mercury (planet), the closest planet to the Sun", so dropping
+    the leading title leaves the part a user actually needs to choose.
+    """
+    text = item_text.strip()
+    if text.startswith(title):
+        text = text[len(title):]
+    return text.lstrip(" ,;:-\u2013\u2014").strip()
 
 _PLACEHOLDER_CONTACT_MARKERS = (
     "example.com",
@@ -404,30 +432,48 @@ class WikipediaClient:
 
         return page
 
-    def _disambiguation_options(self, title: str) -> list[str]:
-        """Candidate titles a disambiguation page points at.
+    def _disambiguation_options(self, title: str) -> list[DisambiguationOption]:
+        """Candidate articles a disambiguation page points at, with descriptions.
 
-        A second request, but only on this path -- and it is what lets the agent
-        retry with a concrete title instead of dead-ending (§2.1).
+        Uses ``action=parse`` and reads the first article link out of each list
+        item. ``prop=links`` would be one obvious alternative, but it returns
+        every link on the page in alphabetical order -- for "Mercury" that
+        yields "Anna Kavan" before "Mercury (planet)". Parsing the list items
+        preserves the page's own ordering and, crucially, keeps each entry's
+        description, which is what makes a clarifying question to the user
+        useful rather than a wall of bare titles (§2.3).
+
+        Best-effort: a failure here must not mask the disambiguation itself.
         """
         try:
-            body = self.request(
-                {
-                    "action": "query",
-                    "prop": "links",
-                    "plnamespace": 0,
-                    "pllimit": MAX_DISAMBIGUATION_OPTIONS,
-                    "titles": title,
-                }
-            )
+            body = self.request({"action": "parse", "page": title, "prop": "text"})
         except WikipediaError:
             return []
 
-        pages = body.get("query", {}).get("pages", [])
-        if not isinstance(pages, list) or not pages:
+        markup = body.get("parse", {}).get("text", "")
+        if not isinstance(markup, str):
             return []
-        links = pages[0].get("links") or []
-        return [str(link.get("title", "")) for link in links if link.get("title")]
+
+        options: list[DisambiguationOption] = []
+        seen: set[str] = set()
+
+        for item in _LIST_ITEM.findall(markup):
+            match = _ARTICLE_LINK.search(item)
+            if match is None:
+                continue
+            candidate = html.unescape(match.group(1)).replace("_", " ")
+            if _NAMESPACED.match(candidate) or candidate in seen:
+                continue
+            seen.add(candidate)
+            options.append(
+                DisambiguationOption(
+                    title=candidate,
+                    description=_describe(strip_html(item), candidate),
+                )
+            )
+            if len(options) >= MAX_DISAMBIGUATION_OPTIONS:
+                break
+        return options
 
     def get_summary(self, title: str) -> Summary:
         """Fetch an article's lead extract.

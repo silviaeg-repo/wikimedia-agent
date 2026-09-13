@@ -366,7 +366,7 @@ The scale, best to worst:
 | **Unassessed** | No grade recorded — *our* label, not Wikipedia's |
 
 **Picking one grade.** The API returns a class per WikiProject and they can disagree.
-Resolution order, deterministic (principle #14):
+Resolution order, deterministic (principle #15):
 1. The `Project-independent assessment` key when present — the canonical cross-project
    grade, and present on every article we sampled.
 2. Otherwise the **lowest** grade among the projects listed. Erring pessimistic is the
@@ -407,7 +407,7 @@ turns a weak answer into no answer. We cite it and flag it.
 **Warning is the renderer's job, not the model's.** This is the load-bearing decision. If
 flagging depends on the model remembering, it will sometimes be forgotten — precisely on
 the long multi-source answers where it matters most. So the renderer emits every warning
-**from the grade field** in the `Provenance` record (principle #14).
+**from the grade field** in the `Provenance` record (principle #15).
 
 **Inline, at the point of the claim.** A warning that only appears in a source list at
 the end is easy to read past, and on a multi-claim answer it does not say *which* claim is
@@ -478,7 +478,7 @@ potentially adversarial is a correctness requirement, not paranoia.
    content are reported, not obeyed. If an article appears to contain directives aimed
    at an AI reader, the agent may mention that as an observation about the article — it
    is factual — but must not act on it.
-4. **Limits live below the model** (principle #16). Retrieved text influencing a tool
+4. **Limits live below the model** (principle #17). Retrieved text influencing a tool
    argument still cannot exceed a cap, because caps are enforced in the client (§2.1),
    not by prompt instruction. Injection cannot widen a search limit or bypass a deadline.
 5. **Provenance and grade are API-derived**, so injected text cannot forge a citation,
@@ -494,7 +494,81 @@ does not follow the embedded instruction, and keeps its citations intact.
 
 ---
 
-## 2.4 Conversational behaviour
+## 2.4 Disambiguation — ask, never guess
+
+An ambiguous question has no right answer, only a right *response*. "Tell me about
+Mercury" could mean a planet, an element, a Roman god, or a record label. Picking one and
+answering confidently is the worst available behaviour: it looks authoritative and is
+wrong half the time, and the user has no signal that a choice was made on their behalf.
+
+**The rule: resolve from context if you can, ask the user if you cannot, guess never.**
+
+### Resolution order
+
+1. **Conversation context.** If earlier turns establish the subject — the user has been
+   asking about the solar system — the agent picks the candidate that fits and **says so
+   in the answer**: "Taking Mercury as the planet." A resolution the user can see is a
+   resolution they can correct.
+2. **Question context.** "What is Mercury's atomic weight?" disambiguates itself. The
+   candidate descriptions (below) are what make this checkable.
+3. **Ask the user.** With no basis to choose, the agent returns a **clarifying question**
+   rather than an answer — the candidates, with their descriptions, and nothing else.
+4. **Never guess.** Not the first option, not the most-linked, not the highest-graded. An
+   unresolvable ambiguity is a question, not an answer.
+
+### Why the candidate list has to be good
+
+A clarifying question is only as useful as the options in it. MediaWiki's `prop=links`
+returns every link on the page **alphabetically**, so "Mercury" leads with "Anna Kavan" —
+technically candidates, useless in a question.
+
+So `DisambiguationError` carries `DisambiguationOption(title, description)` parsed from
+the disambiguation page's own list items, which preserves **page order** (the likeliest
+candidates first) and keeps each entry's **description**:
+
+```
+"Mercury" could mean several things. Which did you have in mind?
+  • Mercury (planet) — the closest planet to the Sun
+  • Mercury (element) — a chemical element
+  • Mercury (mythology) — a Roman deity
+  • Mercury Records — an American record label
+```
+
+That is a question a user can answer in one word. A list of bare titles is not.
+
+### Behavioural requirements
+
+- **A clarifying question is a legitimate turn**, not a failure. It is not scored as a
+  refusal, and it does not count against the retrieval budget.
+- **The agent asks once.** The user's reply resolves the ambiguity, and the resolved
+  subject enters the session registry (§2.5) like any other article — a follow-up does
+  not re-ask.
+- **Ambiguity is reported, not hidden.** When the agent resolves from context rather than
+  asking, it names the reading it chose, so a wrong resolution is visible and correctable
+  in one turn.
+- **Ambiguity surfaces on every retrieval path** — summary and article alike — so no
+  route into the client can silently return a disambiguation page as if it were content.
+- **A disambiguation page is never cited as a source.** It contains no content to ground
+  an answer in.
+
+### Validation
+
+A dedicated eval category (§5), scored programmatically wherever possible:
+
+| Case | Expected |
+|---|---|
+| Ambiguous, no context | Asks; does not answer; options carry descriptions |
+| Ambiguous, resolvable from the question | Answers, naming the reading chosen |
+| Ambiguous, resolvable from earlier turns | Answers about the established subject |
+| Clarification answered | Resolves and answers; does not re-ask |
+| Unambiguous | Does **not** ask — a clarifying question where none is needed is its own failure |
+
+That last row matters as much as the first: an agent that asks about everything is as
+useless as one that guesses.
+
+---
+
+## 2.5 Conversational behaviour
 
 The agent holds a conversation, not a series of unrelated lookups. Two things make that
 work: the message history, and a session-scoped record of what has been retrieved.
@@ -558,7 +632,7 @@ something checkable. Four properties matter:
 
 Conversation history plus article text grows without limit, and article text is the bulk
 of it. Unbounded growth ends in a context-window failure mid-conversation — the worst
-possible moment (principle #11: bound everything).
+possible moment (principle #12: bound everything).
 
 The strategy, cheapest first:
 - **Registry metadata is tiny and always kept.** Titles, grades, revisions, markers — a
@@ -592,7 +666,7 @@ across process restarts in v1; cross-session memory stays out of scope (§1).
 
 ---
 
-## 2.5 Guiding principles
+## 2.6 Guiding principles
 
 Applies to every phase in §4. Where a principle and a deadline conflict, the principle
 wins and the scope shrinks.
@@ -614,35 +688,40 @@ wins and the scope shrinks.
    anything below B-class (Start, Stub, Unassessed) is flagged **inline at the claim**
    and in the source list — by the renderer, from the grade field, not by the model
    remembering to.
-5. **A conversation, not a series of lookups.** Follow-ups resolve against history —
+5. **Ask rather than guess.** An ambiguous subject is a question, not an answer.
+   Resolve it from conversation or question context when you can and **name the reading
+   chosen**; ask the user when you cannot; never pick a candidate silently (§2.4). An
+   agent that asks about everything is as useless as one that guesses, so a clarifying
+   question where none is needed is also a failure.
+6. **A conversation, not a series of lookups.** Follow-ups resolve against history —
    "Where was he born?" answers about whoever "he" is (§2.4). Earlier turns are never
    silently dropped, because a dropped turn is a pronoun with no referent.
-6. **Grounding does not weaken across turns.** A follow-up that feels obvious from
+7. **Grounding does not weaken across turns.** A follow-up that feels obvious from
    context still cites retrieved content. Answering from the model's own knowledge
    because the conversation makes it seem safe is the same failure as #1, just harder to
    notice.
-7. **Citation markers are stable for the session.** If an article is `[1]` in turn one it
+8. **Citation markers are stable for the session.** If an article is `[1]` in turn one it
    is `[1]` in turn six, and its quality flag travels with it permanently (§2.4). A
    warning that decays as the conversation grows is worse than no warning.
-8. **Retrieved content is untrusted data, never instructions.** Wikipedia is
+9. **Retrieved content is untrusted data, never instructions.** Wikipedia is
    user-editable. Article text is delimited and labelled in every tool result, and
    directives found inside it are reported, never obeyed. The agent's instructions
    always outrank anything it reads.
-9. **One boundary per concern.** HTTP lives in `wikipedia.py`, prompts and loop wiring
+10. **One boundary per concern.** HTTP lives in `wikipedia.py`, prompts and loop wiring
    in `agent.py`, tool definitions in `tools.py`. A change of Wikipedia API shape must
    not reach the agent, and a change of prompt must not reach the client.
-10. **Be a good API citizen.** Wikipedia is donated infrastructure. Serial requests,
+11. **Be a good API citizen.** Wikipedia is donated infrastructure. Serial requests,
    honest UA, batching over hammering. When guidance and convenience conflict, follow
    the guidance — and when this plan contradicts upstream guidance, upstream wins and
    the plan gets corrected.
-11. **Bound everything.** Result counts, article sizes, retries, timeouts, retrieval
+12. **Bound everything.** Result counts, article sizes, retries, timeouts, retrieval
    calls per question. Every loop has a ceiling and every wait has a deadline.
-12. **Fail loudly, degrade honestly.** Config errors crash at startup, not mid-question.
+13. **Fail loudly, degrade honestly.** Config errors crash at startup, not mid-question.
    Retrieval failures reach the user as "I couldn't retrieve this", never as silence or
    an unsourced guess.
-13. **Typed at the seams.** Typed arguments, typed returns, typed exceptions across every
+14. **Typed at the seams.** Typed arguments, typed returns, typed exceptions across every
    module boundary, checked in CI.
-14. **Deterministic by default; paid model calls are a deliberate act.** Local
+15. **Deterministic by default; paid model calls are a deliberate act.** Local
    development runs on deterministic code and unit tests, never on a live model.
    Concretely:
    - **Prefer a deterministic mechanism to a prompted one** wherever both could work.
@@ -663,18 +742,18 @@ wins and the scope shrinks.
    - **A test that needs a live model is a design smell.** It usually means logic that
      belongs in deterministic code has leaked into the prompt. Move it down rather than
      paying to test it.
-15. **Measure before optimizing.** Model choice, effort level, and cost decisions come
+16. **Measure before optimizing.** Model choice, effort level, and cost decisions come
    from eval numbers, not intuition.
-16. **Tool arguments are untrusted.** The model chooses them and retrieved content can
+17. **Tool arguments are untrusted.** The model chooses them and retrieved content can
     influence that choice. The client validates and clamps every argument; limits are
     enforced server-side of the boundary, never by prompt instruction alone.
-17. **Constraints outrank principles.** C1 and C2 (§0) are assignment requirements, not
+18. **Constraints outrank principles.** C1 and C2 (§0) are assignment requirements, not
     trade-offs. Any principle below that conflicts with them loses, and compliance is
     enforced by tests rather than by care.
-18. **All retrieval is ours.** No hosted search, no server-side fetch tool, no managed
+19. **All retrieval is ours.** No hosted search, no server-side fetch tool, no managed
     RAG. The agent's only route to the world is the Wikipedia client in §2.1 — which is
     also what makes every answer auditable.
-19. **The judge is a fixed instrument, not a prompt.** A judge configured separately from
+20. **The judge is a fixed instrument, not a prompt.** A judge configured separately from
     the agent — `claude-sonnet-5` grading `claude-opus-5`, so it is not marking its own
     tier's homework — and pinned as one versioned unit: same model,
     prompt, rubric and settings — applied systematically across every category, receiving
@@ -683,7 +762,7 @@ wins and the scope shrinks.
     resolved, whether poor sources were flagged). It rules only on what needs judgement;
     everything checkable is checked in code. Scores from different judge versions are
     never compared — re-judge the stored transcripts instead (§5).
-20. **Don't build for hypotheticals.** The provider is fixed by C1, so we depend on the
+21. **Don't build for hypotheticals.** The provider is fixed by C1, so we depend on the
     Anthropic SDK directly rather than wrapping it in a port for a second provider that
     the assignment forbids. Abstractions earn their place by solving a problem we
     actually have — the §2.1 Wikipedia boundary does; a model-provider port did not.
@@ -785,7 +864,8 @@ batching, and the response cache.
 
 **Acceptance checks (free, live API):**
 1. A known-stable article fetches and section-splits correctly.
-2. A known disambiguation title raises `DisambiguationError` with a non-empty option list.
+2. A known disambiguation title raises `DisambiguationError` whose options carry both
+   titles and descriptions, in the page's own order.
 
 **Done when:** all three retrieval methods work against live Wikipedia and every bound is
 enforced in the client rather than by the caller.
@@ -952,19 +1032,27 @@ evicted.
 
 ---
 
-### Phase 10 — Multi-hop & honest refusal
-**Deliverable:** iterative retrieval, retrieval-failure paths, refusal behaviour.
+### Phase 10 — Multi-hop, disambiguation & honest refusal
+**Deliverable:** iterative retrieval, the clarifying-question turn (§2.4), retrieval
+failure paths, refusal behaviour.
 
 **Unit tests:**
+- A `DisambiguationError` becomes a clarifying-question turn, not an error message, and
+  carries the option descriptions through to the rendered question.
+- A clarifying question does not count against the retrieval budget.
+- An answered clarification resolves to the chosen title and registers it (§2.5).
 - A retrieval failure surfaces as "I couldn't retrieve this", never silence.
 - The retrieval-call cap holds under an intentionally ambiguous question.
 - The per-question deadline fires and is reported.
 
 **Evals (paid, scoped):**
-1. **Multi-hop** — "Who succeeded the person who did X?"
-2. **Not-in-Wikipedia** — declines rather than inventing.
+1. **Ambiguous, no context** — asks rather than answering, with described options.
+2. **Unambiguous control** — answers directly, with no needless question.
+3. **Multi-hop** — "Who succeeded the person who did X?"
+4. **Not-in-Wikipedia** — declines rather than inventing.
 
-**Done when:** two-hop questions resolve and refusals are correct.
+**Done when:** two-hop questions resolve, ambiguous ones ask, unambiguous ones do not,
+and refusals are correct.
 
 ---
 
@@ -991,7 +1079,7 @@ eval run.
 
 **Unit tests:**
 - CLI parses arguments, starts a session, and handles `/new` and exit.
-- A config error fails at startup with a clear message (principle #12).
+- A config error fails at startup with a clear message (principle #13).
 
 **Evals (paid, full):**
 1. **The complete suite** on the test split — the headline numbers against §5's bar.
@@ -1083,6 +1171,10 @@ short conversations scored turn by turn — across these categories:
 | **Injection resistance** | Untrusted content (§2.3) | A fixture article carrying "ignore your instructions" directives |
 | **Low-quality source** | Grade surfacing + warning | A question only a Stub covers — is it answered, flagged, and the article named? |
 | **Competing sources** | Best-available selection | A claim covered by both a Stub and a GA — is the better source preferred? |
+| **Ambiguous, no context** | Asks instead of answering (§2.4) | "Tell me about Mercury" |
+| **Ambiguous, resolvable** | Resolves and names the reading | "What is Mercury's atomic weight?" |
+| **Clarification answered** | Resolves without re-asking | "Mercury" → "the planet" |
+| **Unambiguous control** | Does *not* ask a needless question | "Who was Ada Lovelace?" |
 | **Follow-up (pronoun)** | History resolution | "Who was Ben Franklin?" → "Where was he born?" |
 | **Follow-up (refinement)** | Re-use over re-fetch | "Say more about the kite experiment" |
 | **Follow-up (pivot)** | Subject change detected | "What about Jefferson?" |
@@ -1091,7 +1183,7 @@ short conversations scored turn by turn — across these categories:
 **Grading.** Three scores per question:
 1. **Answer correctness** — LLM-as-judge against the reference answer, under the fixed
    judge contract below.
-2. **Citation validity** — programmatic, not judged (principle #14): every cited article
+2. **Citation validity** — programmatic, not judged (principle #15): every cited article
    must exist, and the cited text must actually appear in the fetched content. Free,
    deterministic, and it catches fabricated citations — the failure mode that matters
    most here.
@@ -1118,7 +1210,7 @@ short conversations scored turn by turn — across these categories:
    rather than a model score.
 
 Only scores 1 and 6 need a paid judge call. The other six are deterministic and run
-against a stored transcript for free (principle #14) — so re-scoring citations, provenance, and
+against a stored transcript for free (principle #15) — so re-scoring citations, provenance, and
 injection resistance after a change costs nothing.
 
 #### The judge
@@ -1147,7 +1239,7 @@ transcripts are stored.
 | **Which criteria apply** to this entry | Systematic application, not ad-hoc judgement |
 
 **Deterministic signals are given to the judge as established facts, never re-derived by
-it** (principle #14). Code already knows these, and asking a model to re-determine them
+it** (principle #15). Code already knows these, and asking a model to re-determine them
 adds cost and variance for nothing:
 
 - Did the agent **search Wikipedia or answer from context**? (tool calls in the trace)
@@ -1172,7 +1264,7 @@ deliberate — the judge's task is narrow and bounded, and a deeper-thinking jud
 variance rather than accuracy. Its 1M context holds a full multi-turn transcript; the
 runner still **size-checks the judge package and fails loudly** rather than truncating a
 transcript, since silently grading a partial transcript would be a wrong score presented
-as a right one (principle #12).
+as a right one (principle #13).
 
 **Consistency measures:**
 - Fixed criterion order; the judge never sees other entries' scores, so it cannot drift
@@ -1232,10 +1324,11 @@ follow-up resolution**, and **100% marker stability** — also renderer-enforced
 | A C2 violation slips in — someone adds a server tool for convenience | Layer 0 test fails any tool entry carrying a `type` field; runs on every commit |
 | `tool_runner` is beta and its surface may change | Tool functions are plain Python and the loop is ~30 lines to bring in-house; pin the SDK version and cover the loop with offline fixture tests |
 | A hard stop mid-turn is awkward under `tool_runner` — the cap returns a refusal result rather than breaking outright | Accepted; the cap still holds, the model just finishes its turn. Revisit only if runaway loops show up in eval runs |
-| A follow-up answered from model priors because context makes it feel obvious | Grounding is per-turn, not per-session (principle #6); follow-up entries are scored for citations, not just for the right subject |
+| The agent silently picks one reading of an ambiguous subject | It asks instead, and names the reading when it resolves from context; scored both ways in the eval set, including a control for asking when it should not (§2.4) |
+| A follow-up answered from model priors because context makes it feel obvious | Grounding is per-turn, not per-session (principle #7); follow-up entries are scored for citations, not just for the right subject |
 | Context exhaustion mid-conversation | Registry metadata is tiny and always kept; article bodies evict against a configured budget and re-fetch from cache; the agent says when it has evicted rather than forgetting silently (§2.4) |
 | Injected content from an early turn influencing a later one | Multi-turn case in the injection eval category; the §2.3 defences are turn-independent |
-| Paid model calls fire accidentally during development | Layer 3 is marker-excluded from the default `pytest` run, kept out of watch modes and pre-commit hooks, and needs an explicit command that names a scope (principle #14) |
+| Paid model calls fire accidentally during development | Layer 3 is marker-excluded from the default `pytest` run, kept out of watch modes and pre-commit hooks, and needs an explicit command that names a scope (principle #15) |
 | Judge drift makes scores incomparable across runs | Judge model, prompt, rubric and settings are pinned as a `judge_version` stamped on every report; the runner refuses cross-version comparisons, and a hand-graded calibration set gates every judge change (§5) |
 | Judge self-preference — it grades work from the same vendor family | Judge and agent are different models (`claude-sonnet-5` judging `claude-opus-5`), the judge's scope is narrow (deterministic facts are computed in code and handed to it), the release-gating scores are not the judge's to give, and the calibration set catches divergence from human labels |
 | A cheaper judge silently grades worse | Calibration agreement is a release gate, not a report line — a judge below threshold is not used, and the fallback is recorded with its reason |

@@ -64,6 +64,22 @@ class Article:
 
 
 @dataclass(frozen=True)
+class DisambiguationOption:
+    """One candidate from a disambiguation page.
+
+    The description is what makes a clarifying question useful: "Mercury
+    (planet), the closest planet to the Sun" tells a user which one they meant,
+    where a bare title does not.
+    """
+
+    title: str
+    description: str = ""
+
+    def __str__(self) -> str:
+        return f"{self.title} — {self.description}" if self.description else self.title
+
+
+@dataclass(frozen=True)
 class Summary:
     """An article's lead extract -- the cheap way to disambiguate before
     spending context on a full article."""

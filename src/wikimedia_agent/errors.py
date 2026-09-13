@@ -7,6 +7,11 @@ rather than inspect a status code.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import DisambiguationOption
+
 
 class ConfigurationError(Exception):
     """Raised at startup when the client is misconfigured.
@@ -32,15 +37,21 @@ class PageNotFound(WikipediaError):
 class DisambiguationError(WikipediaError):
     """The title resolves to a disambiguation page.
 
-    Carries ``options`` so the agent can retry with a concrete title instead of
-    dead-ending (§2.1).
+    Carries ``options``, each with a human-readable description, so the agent
+    can either resolve the ambiguity from conversation context or **ask the user
+    which one they meant** -- never guess (§2.3).
     """
 
-    def __init__(self, title: str, options: list[str]) -> None:
-        shown = ", ".join(options[:5]) if options else "no candidates listed"
+    def __init__(self, title: str, options: list[DisambiguationOption]) -> None:
+        shown = ", ".join(o.title for o in options[:5]) if options else "no candidates listed"
         super().__init__(f"{title!r} is a disambiguation page ({shown})")
         self.title = title
         self.options = options
+
+    @property
+    def titles(self) -> list[str]:
+        """Just the candidate titles, for callers that do not need descriptions."""
+        return [option.title for option in self.options]
 
 
 class WikipediaTimeout(WikipediaError):

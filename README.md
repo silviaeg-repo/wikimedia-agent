@@ -19,6 +19,9 @@ sources inline.
   a Stub is visibly different from one resting on a Featured Article.
 - **Holds a conversation** — "Who was Ben Franklin?" then "Where was he born?" resolves
   correctly, with sources carried forward.
+- **Asks rather than guesses.** When a subject is ambiguous and nothing in the
+  conversation settles it, the agent asks which you meant instead of picking one and
+  sounding confident.
 - Uses **no hosted search or RAG tools**. Retrieval is a plain HTTP client against the
   public Wikipedia API.
 
@@ -116,11 +119,14 @@ with WikipediaClient(contact="you@example-domain.org") as client:
     # Several titles in one request -- batching, not concurrency.
     print(sorted(client.get_summaries(["Ada Lovelace", "Charles Babbage"])))
 
-    # Ambiguous titles raise, carrying candidates so you can retry.
+    # Ambiguous titles raise, carrying described candidates in the page's own
+    # order -- which is what lets the agent ask the user a useful question
+    # rather than guessing which Mercury you meant.
     try:
         client.get_article("Mercury")
     except DisambiguationError as exc:
-        print("ambiguous:", exc.options[:3])
+        for option in exc.options[:3]:
+            print(f"  {option.title} -- {option.description}")
 
     try:
         client.get_summary("Not A Real Page Xyzzy")
@@ -147,7 +153,10 @@ Two design decisions worth knowing before reading the code:
    etiquette](https://www.mediawiki.org/wiki/API:Etiquette) asks clients to wait for one
    request to finish before sending the next, so there is no concurrency here by design.
    Batching multiple titles into one request is the sanctioned way to go faster.
-3. **Bounds live in the client, not the caller.** Search limits, article size and batch
+3. **Ambiguity is surfaced, never resolved silently.** A disambiguation page raises
+   rather than returning content, carrying described candidates in the page's own order
+   so the agent can ask a question a user can actually answer.
+4. **Bounds live in the client, not the caller.** Search limits, article size and batch
    size are clamped inside `wikipedia.py`, so nothing above it — including, later, a
    model choosing tool arguments — can widen them.
 

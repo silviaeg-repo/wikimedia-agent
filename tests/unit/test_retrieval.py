@@ -9,6 +9,7 @@ from tests.helpers import CONTACT, json_response
 from wikimedia_agent.errors import DisambiguationError, PageNotFound, WikipediaAPIError
 from wikimedia_agent.wikipedia import (
     MAX_ARTICLE_CHARS,
+    MAX_DISAMBIGUATION_OPTIONS,
     MAX_SEARCH_LIMIT,
     MAX_TITLES_PER_REQUEST,
     WikipediaClient,
@@ -186,36 +187,91 @@ def test_missing_page_raises_page_not_found(clock):
             c.get_article("Nope")
 
 
-def test_disambiguation_raises_with_options(clock):
+DISAMBIG_HTML = """
+<div class="mw-parser-output">
+<ul>
+<li><a href="/wiki/Mercury_(planet)" title="x">Mercury (planet)</a>, the closest planet
+to the Sun</li>
+<li><a href="/wiki/Mercury_(element)">Mercury (element)</a>, a chemical element</li>
+<li><a href="/wiki/Special:Search/intitle:Mercury">Search</a></li>
+<li>No link in this item</li>
+<li><a href="/wiki/Mercury_(planet)">Mercury (planet)</a>, a duplicate</li>
+</ul></div>
+"""
+
+
+def disambig_handler(parse_response=None):
+    """Serve a disambiguation page, then its parsed option list."""
+
     def handler(request):
         params = dict(request.url.params)
-        if params.get("prop") == "links":
-            return json_response(
-                {"query": {"pages": [{"links": [
-                    {"title": "Mercury (planet)"}, {"title": "Mercury (element)"}]}]}}
-            )
+        if params.get("action") == "parse":
+            if parse_response is not None:
+                return parse_response
+            return json_response({"parse": {"text": DISAMBIG_HTML}})
         return json_response(page(title="Mercury", pageprops={"disambiguation": ""}))
 
-    with client_with(handler, clock) as c:
+    return handler
+
+
+def test_disambiguation_raises_with_described_options(clock):
+    with client_with(disambig_handler(), clock) as c:
         with pytest.raises(DisambiguationError) as excinfo:
             c.get_article("Mercury")
 
-    assert excinfo.value.options == ["Mercury (planet)", "Mercury (element)"]
-    assert "Mercury (planet)" in str(excinfo.value)
+    options = excinfo.value.options
+    assert [o.title for o in options] == ["Mercury (planet)", "Mercury (element)"]
+    assert options[0].description == "the closest planet to the Sun"
+    assert options[1].description == "a chemical element"
+    assert excinfo.value.titles == ["Mercury (planet)", "Mercury (element)"]
+
+
+def test_disambiguation_options_preserve_page_order(clock):
+    """Page order puts the likeliest candidates first.
+
+    An alphabetical list (which `prop=links` would give) buries them: for
+    "Mercury" it leads with "Anna Kavan".
+    """
+    with client_with(disambig_handler(), clock) as c:
+        with pytest.raises(DisambiguationError) as excinfo:
+            c.get_article("Mercury")
+    assert excinfo.value.options[0].title == "Mercury (planet)"
+
+
+def test_disambiguation_skips_namespaced_links_and_duplicates(clock):
+    with client_with(disambig_handler(), clock) as c:
+        with pytest.raises(DisambiguationError) as excinfo:
+            c.get_article("Mercury")
+    titles = excinfo.value.titles
+    assert not any(t.startswith("Special:") for t in titles)
+    assert len(titles) == len(set(titles))
+
+
+def test_disambiguation_options_are_capped(clock):
+    many = "".join(
+        f'<li><a href="/wiki/Option_{i}">Option {i}</a>, number {i}</li>' for i in range(80)
+    )
+    response = json_response({"parse": {"text": f"<ul>{many}</ul>"}})
+    with client_with(disambig_handler(response), clock) as c:
+        with pytest.raises(DisambiguationError) as excinfo:
+            c.get_article("Mercury")
+    assert len(excinfo.value.options) == MAX_DISAMBIGUATION_OPTIONS
 
 
 def test_disambiguation_without_options_still_raises(clock):
-    """Options are a convenience; failing to fetch them must not mask the error."""
-
-    def handler(request):
-        if dict(request.url.params).get("prop") == "links":
-            return json_response({}, status_code=404)
-        return json_response(page(title="Mercury", pageprops={"disambiguation": ""}))
-
-    with client_with(handler, clock) as c:
+    """Options are best-effort; failing to fetch them must not mask the ambiguity."""
+    with client_with(disambig_handler(json_response({}, status_code=404)), clock) as c:
         with pytest.raises(DisambiguationError) as excinfo:
             c.get_article("Mercury")
     assert excinfo.value.options == []
+    assert "no candidates listed" in str(excinfo.value)
+
+
+def test_summary_also_raises_on_disambiguation(clock):
+    """Ambiguity must surface on every retrieval path, not just get_article."""
+    with client_with(disambig_handler(), clock) as c:
+        with pytest.raises(DisambiguationError):
+            c.get_summary("Mercury")
 
 
 # -- batching --------------------------------------------------------------
