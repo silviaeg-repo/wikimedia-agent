@@ -22,7 +22,7 @@ from wikimedia_agent.agent import DEFAULT_MODEL, WikipediaAgent, build_agent
 from wikimedia_agent.session import Session
 
 from .cost import CostTracker, estimate
-from .judge import JUDGE_MODEL, Judge, JudgeError, build_package
+from .judge import JUDGE_MODEL, JUDGEABLE_CRITERIA, Judge, JudgeError, build_package
 from .models import (
     EntryResult,
     EvalEntry,
@@ -32,7 +32,11 @@ from .models import (
     load_dataset,
     select,
 )
-from .scorers import DETERMINISTIC_SCORERS, deterministic_signals
+from .scorers import (
+    DETERMINISTIC_SCORERS,
+    deterministic_signals,
+    score_no_forbidden_content,
+)
 
 HERE = Path(__file__).resolve().parent
 DATASET_PATH = HERE / "dataset.jsonl"
@@ -48,7 +52,7 @@ CATEGORY_SCORERS: dict[str, tuple[str, ...]] = {
                   "source_disclosure"),
     "follow-up": ("grounding", "citation_validity", "source_disclosure",
                   "marker_stability"),
-    "not-in-wikipedia": ("refusal_correctness", "citation_validity"),
+    "not-in-wikipedia": ("citation_validity",),
     "ambiguous-no-context": ("asks_for_clarification",),
     "unambiguous-control": ("does_not_ask", "grounding", "citation_validity"),
     "ambiguous-resolvable": ("grounding", "citation_validity", "does_not_ask"),
@@ -158,14 +162,17 @@ def run_entry(agent: WikipediaAgent, entry: EvalEntry) -> Transcript:
 
 def score_deterministically(entry: EvalEntry, transcript: Transcript) -> list[Score]:
     names = CATEGORY_SCORERS.get(entry.category, DEFAULT_SCORERS)
-    return [DETERMINISTIC_SCORERS[name](transcript) for name in names]
+    scores = [DETERMINISTIC_SCORERS[name](transcript) for name in names]
+    if entry.forbidden_content:
+        scores.append(score_no_forbidden_content(transcript, entry.forbidden_content))
+    return scores
 
 
 def score_with_judge(
     judge: Judge, entry: EvalEntry, transcript: Transcript, tracker: CostTracker
 ) -> list[Score]:
     """Judge the entry and record what judging cost."""
-    criteria = [c for c in entry.criteria if c in {"answer_correctness"}]
+    criteria = [c for c in entry.criteria if c in JUDGEABLE_CRITERIA]
     if not criteria:
         return []
 

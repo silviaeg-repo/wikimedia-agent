@@ -1190,8 +1190,19 @@ short conversations scored turn by turn — across these categories:
    deterministic, and it catches fabricated citations — the failure mode that matters
    most here.
 3. **Refusal correctness** — on the not-in-Wikipedia set, did it decline instead of
-   inventing an answer? Detected by structure, not by a judge, where the refusal has a
-   recognizable shape.
+   inventing an answer? **Judged.**
+
+   *Revised in Phase 8, from evidence.* This was specified as a deterministic check, on
+   the assumption that a refusal "has a recognizable shape". A real run falsified that:
+   the agent declined with *"I can't answer that"* and *"I can't help with that"* — both
+   correct, neither matching any phrase list worth maintaining — and the deterministic
+   scorer reported FAIL while the judge correctly passed them. A heuristic that fails
+   correct behaviour is worse than none, because it erodes trust in the whole report.
+
+   What code checks instead is **`forbidden_content`**: per-entry patterns describing
+   what an invented answer would have to contain — a phone-number shape, a fabricated
+   breakfast. Precise where phrase-matching is not, and silent about *how* the agent
+   declined, which is the judge's business.
 
 4. **Provenance integrity** — programmatic: every citation resolves to a retrieval whose
    `revision_id` was recorded, the cited text appears in *that* revision, and the

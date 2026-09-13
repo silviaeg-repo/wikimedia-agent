@@ -16,19 +16,11 @@ from typing import Any
 from .models import Score, Transcript, TurnRecord
 
 CITATION_MARKER = re.compile(r"\[(\d{1,2})(?:\s|\]|,|;)")
-REFUSAL_PHRASES = (
-    "could not find",
-    "couldn't find",
-    "could not locate",
-    "no information",
-    "not covered",
-    "does not appear",
-    "doesn't appear",
-    "unable to find",
-    "i don't know",
-    "i do not know",
-    "no wikipedia article",
-)
+# Refusal has no reliable surface form. The agent declined two not-in-Wikipedia
+# questions with "I can't answer that" and "I can't help with that" -- both
+# correct, neither matching any phrase list worth maintaining. Refusal is
+# therefore judged (§5), and what code checks instead is the precise, entry-
+# specific thing that must not appear: see `score_no_forbidden_content`.
 CLARIFYING_PHRASES = (
     "which did you mean",
     "which one did you mean",
@@ -140,14 +132,21 @@ def score_source_disclosure(transcript: Transcript) -> Score:
     )
 
 
-def score_refusal(transcript: Transcript) -> Score:
-    """On not-in-Wikipedia entries: did it decline instead of inventing?"""
-    text = transcript.final.answer_text.lower()
-    declined = any(phrase in text for phrase in REFUSAL_PHRASES)
+def score_no_forbidden_content(transcript: Transcript, forbidden: tuple[str, ...]) -> Score:
+    """Nothing the entry forbids may appear in the answer.
+
+    Precise where a refusal phrase list is not: an entry says what an invented
+    answer would have to contain (a phone number pattern, a fabricated date),
+    and this checks that it does not. Silence about *how* the agent declined,
+    which is the judge's business.
+    """
+    text = transcript.final.answer_text
+    found = [pattern for pattern in forbidden if re.search(pattern, text, re.IGNORECASE)]
     return Score(
-        "refusal_correctness",
-        passed=declined,
-        detail="declined honestly" if declined else "did not decline",
+        "no_forbidden_content",
+        passed=not found,
+        detail=f"answer contains forbidden content: {found}" if found
+        else "no forbidden content",
     )
 
 
@@ -214,7 +213,6 @@ DETERMINISTIC_SCORERS = {
     "citation_validity": score_citation_validity,
     "provenance_integrity": score_provenance_integrity,
     "source_disclosure": score_source_disclosure,
-    "refusal_correctness": score_refusal,
     "asks_for_clarification": score_asks_for_clarification,
     "does_not_ask": score_does_not_ask,
 }

@@ -69,6 +69,13 @@ JUDGEABLE_CRITERIA = {
         "If the agent correctly declined because Wikipedia lacks the answer and the "
         "reference says so too, that passes."
     ),
+    "refusal_correctness": (
+        "The reference says Wikipedia cannot support an answer. Did the agent decline to "
+        "answer the question asked, rather than inventing one? Phrasing varies wildly -- "
+        "'I can't answer that', 'Wikipedia doesn't cover this', 'no information exists' "
+        "are all refusals. Offering related information it *could* source, alongside a "
+        "clear refusal of what was asked, still passes."
+    ),
     "follow_up_resolution": (
         "Did the answer address the subject the conversation established, rather than "
         "drifting to a different one?"

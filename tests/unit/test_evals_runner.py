@@ -53,9 +53,22 @@ def test_disabling_the_judge_lowers_the_estimate():
 
 
 def test_each_category_enables_its_own_criteria():
-    assert "refusal_correctness" in CATEGORY_SCORERS["not-in-wikipedia"]
     assert "asks_for_clarification" in CATEGORY_SCORERS["ambiguous-no-context"]
     assert "does_not_ask" in CATEGORY_SCORERS["unambiguous-control"]
+    assert "marker_stability" in CATEGORY_SCORERS["follow-up"]
+
+
+def test_forbidden_content_is_scored_when_an_entry_declares_it():
+    entry = EvalEntry(
+        id="x", category="not-in-wikipedia", turns=("q",),
+        forbidden_content=(r"\btoast\b",),
+    )
+    transcript = Transcript(
+        entry_id="x", category="not-in-wikipedia",
+        turns=[TurnRecord(question="q", answer_text="Your neighbour had toast.")],
+    )
+    names = [score.criterion for score in score_deterministically(entry, transcript)]
+    assert "no_forbidden_content" in names
 
 
 def test_the_same_criterion_name_is_reused_across_categories():

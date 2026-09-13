@@ -51,6 +51,9 @@ class EvalEntry:
     reference_answer: str = ""
     expected_articles: tuple[str, ...] = ()
     criteria: tuple[str, ...] = ()
+    forbidden_content: tuple[str, ...] = ()
+    """Regexes that must NOT appear in the answer -- what an invented answer
+    would have to contain. Precise where a refusal phrase list is not."""
     split: str = "train"
     notes: str = ""
 
@@ -101,6 +104,7 @@ class EvalEntry:
             reference_answer=str(raw.get("reference_answer", "")),
             expected_articles=tuple(str(a) for a in raw.get("expected_articles", ())),
             criteria=criteria,
+            forbidden_content=tuple(str(p) for p in raw.get("forbidden_content", ())),
             split=split,
             notes=str(raw.get("notes", "")),
         )
