@@ -215,3 +215,76 @@ def test_a_registry_assigns_numbers_once_and_never_renumbers():
 
     assert (first.number, second.number) == (1, 2)
     assert again.number == 1
+
+
+# -- the source list is scoped to the turn (§2.5) -------------------------
+#
+# Regression: a session-wide registry was listed in full under every answer, so
+# a question about churches was footnoted with articles about extraterrestrial
+# life read two turns earlier.
+
+
+def test_earlier_turns_articles_are_not_listed_under_a_later_answer():
+    registry = SourceRegistry()
+    render("Aliens. [[Search for extraterrestrial intelligence]]",
+           [prov("Search for extraterrestrial intelligence", 11, 1)],
+           {11: Grade.B}, registry=registry)
+
+    later = render("Churches are ambiguous. Which did you mean?", [], {}, registry=registry)
+
+    assert later.citations == []
+    assert "Sources" not in later.text
+    assert "extraterrestrial" not in later.text
+
+
+def test_a_later_turn_lists_only_what_it_used():
+    registry = SourceRegistry()
+    render("First. [[Ada Lovelace]]", [prov()], {974: Grade.B}, registry=registry)
+
+    second = render("Second. [[Charles Babbage]]",
+                    [prov("Charles Babbage", 5, 13)], {5: Grade.GA}, registry=registry)
+
+    assert [c.provenance.title for c in second.citations] == ["Charles Babbage"]
+    assert "Ada Lovelace" not in second.text
+
+
+def test_citing_an_earlier_article_lists_it_without_refetching():
+    """A follow-up may legitimately refer back to [1] with no new retrieval."""
+    registry = SourceRegistry()
+    render("First. [[Ada Lovelace]]", [prov()], {974: Grade.B}, registry=registry)
+
+    second = render("As noted earlier. [[Ada Lovelace]]", [], {}, registry=registry)
+
+    assert [c.number for c in second.citations] == [1]
+    assert "[1]" in second.text
+    assert second.cited_numbers == [1]
+
+
+def test_numbering_still_spans_the_session():
+    """Scoping the list must not reset the numbers."""
+    registry = SourceRegistry()
+    render("First. [[Ada Lovelace]]", [prov()], {974: Grade.B}, registry=registry)
+    second = render("Second. [[Charles Babbage]]",
+                    [prov("Charles Babbage", 5, 13)], {5: Grade.GA}, registry=registry)
+
+    assert second.citations[0].number == 2, "the second article keeps number 2"
+
+
+def test_the_cited_flag_does_not_persist_across_turns():
+    """Once-cited must not mean always-cited: it would suppress the
+    'consulted, not cited' note on a later turn."""
+    registry = SourceRegistry()
+    render("Cited here. [[Ada Lovelace]]", [prov()], {974: Grade.B}, registry=registry)
+
+    second = render("Not cited this time.", [prov()], {974: Grade.B}, registry=registry)
+
+    assert second.citations[0].cited is False
+    assert "consulted, not cited" in second.text
+
+
+def test_an_unresolved_citation_is_reported_even_with_no_sources():
+    """The warning must survive when there is no source list to append it to."""
+    out = render("It is ambiguous. [[St. Mary's Church]]", [], {})
+    assert out.unresolved == ["St. Mary's Church"]
+    assert UNKNOWN_MARKER in out.text
+    assert "not among the articles retrieved" in out.text

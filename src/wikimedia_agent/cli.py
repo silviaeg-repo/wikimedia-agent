@@ -177,8 +177,12 @@ def ask_once(asker: object, question: str) -> int:
     # prints what it produced rather than assembling its own.
     print(answer.display_text)
 
-    if not answer.sources:
-        print("\n(No Wikipedia articles were retrieved for this answer.)")
+    # Based on what the answer actually shows, not on this turn's retrievals: a
+    # follow-up may legitimately cite an article read earlier without fetching
+    # anything, and printing "nothing retrieved" above a source list is a
+    # contradiction the reader has to resolve.
+    if answer.rendered is not None and not answer.rendered.citations:
+        print("\n(No Wikipedia articles were used for this answer.)")
 
     print(
         f"\n{answer.input_tokens} input / {answer.output_tokens} output tokens"

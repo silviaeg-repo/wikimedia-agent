@@ -90,7 +90,7 @@ def test_no_retrieval_is_stated_rather_than_left_blank(monkeypatch, capsys):
     api = RecordedAnthropic(assistant_message(content=[text_block("No lookup needed.")]))
     patched_agent(monkeypatch, api)
     entry.main(["question"])
-    assert "No Wikipedia articles were retrieved" in capsys.readouterr().out
+    assert "No Wikipedia articles were used" in capsys.readouterr().out
 
 
 def test_no_arguments_enters_the_interactive_loop(monkeypatch, capsys):

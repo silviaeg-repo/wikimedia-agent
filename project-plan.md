@@ -651,9 +651,17 @@ something checkable. Four properties matter:
    already in context, and the registry's recorded revision stays the provenance. If a
    new *section* is needed, that is a fresh retrieval against the same article, recorded
    as such.
-4. **The registry is the source of truth for the source list.** Each answer's sources are
-   rendered from registry entries touched in that turn, so §2.3's "every article used is
-   named" holds per-turn without recomputing anything.
+4. **The registry is the source of truth for the source list, scoped to the turn.** Each
+   answer lists the entries *that turn* touched — retrieved or cited — not everything the
+   session has ever read. The registry spans the session so **numbering** stays stable;
+   the **listing** does not.
+
+   *Found in use, after Phase 12.* The renderer listed the whole registry under every
+   answer, so a question about St. Mary's Church was footnoted with articles on
+   extraterrestrial life read two turns earlier — sources attached to claims they did not
+   support, which is the failure §2.3 exists to prevent. A second leak rode along: the
+   "cited" flag was written onto the shared registry entry, so once cited an article
+   stayed cited forever and could never again be marked *consulted, not cited*.
 
 ### Bounding the context
 

@@ -131,17 +131,27 @@ def render(
     *,
     registry: SourceRegistry | None = None,
 ) -> RenderedAnswer:
-    """Decorate citations and append the source list.
+    """Decorate citations and append this turn's source list.
 
     Everything an answer says about source quality comes from here, derived from
     the grade recorded at retrieval time -- never from the model's own account
     of it.
+
+    **The list is scoped to the turn** (§2.5): it shows what this answer read or
+    cited, not everything the conversation has ever read. The registry spans the
+    session so numbering stays stable, but listing its whole contents under an
+    unrelated answer would attach sources to claims they do not support.
     """
     registry = registry or SourceRegistry()
+
+    # Numbers come from the session-wide registry; the listing does not.
+    this_turn: dict[int, Citation] = {}
     for provenance in retrievals:
-        registry.register(provenance, grades.get(provenance.page_id, Grade.UNASSESSED))
+        citation = registry.register(provenance, grades.get(provenance.page_id, Grade.UNASSESSED))
+        this_turn.setdefault(citation.number, citation)
 
     unresolved: list[str] = []
+    cited_numbers: set[int] = set()
 
     def replace(match: re.Match[str]) -> str:
         title = match.group(1).strip()
@@ -152,13 +162,26 @@ def render(
             # the answer and catchable by the eval scorers (§5).
             unresolved.append(title)
             return UNKNOWN_MARKER
-        citation.cited = True
+        # An earlier turn's article may legitimately be cited again, so it joins
+        # this turn's list even though nothing was fetched for it.
+        this_turn.setdefault(citation.number, citation)
+        cited_numbers.add(citation.number)
         return citation.marker()
 
     body = CITATION.sub(replace, answer_text).strip()
-    citations = registry.all()
+    citations = [
+        Citation(
+            number=entry.number,
+            provenance=entry.provenance,
+            grade=entry.grade,
+            cited=entry.number in cited_numbers,
+        )
+        for entry in sorted(this_turn.values(), key=lambda c: c.number)
+    ]
 
     if not citations:
+        if unresolved:
+            body = "\n".join([body, "", _unresolved_note(unresolved)])
         return RenderedAnswer(text=body, citations=[], unresolved=unresolved)
 
     parts = [body, "", "Sources"]
@@ -167,13 +190,14 @@ def render(
     if any(citation.is_poor for citation in citations):
         parts.extend(["", FOOTER_NOTE])
     if unresolved:
-        parts.extend(
-            [
-                "",
-                f"{UNKNOWN_MARKER} This answer referred to "
-                f"{', '.join(repr(title) for title in unresolved)}, which was not among "
-                "the articles retrieved. Treat those claims as unsupported.",
-            ]
-        )
+        parts.extend(["", _unresolved_note(unresolved)])
 
     return RenderedAnswer(text="\n".join(parts), citations=citations, unresolved=unresolved)
+
+
+def _unresolved_note(titles: list[str]) -> str:
+    named = ", ".join(repr(title) for title in titles)
+    return (
+        f"{UNKNOWN_MARKER} This answer referred to {named}, which was not among the "
+        "articles retrieved. Treat those claims as unsupported."
+    )
