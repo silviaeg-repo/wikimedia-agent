@@ -64,13 +64,17 @@ Compliance is tested, not asserted:
   handled through iterative search — the agent may make several retrieval calls
   per question.
 - A CLI for interactive use, and a Python API for embedding elsewhere.
+- **Multi-turn conversation** (§2.4): follow-up questions resolve against what was already
+  asked and retrieved — "Who was Ben Franklin?" then "Where was he born?" — with the
+  sources and their quality grades carried forward.
 
 ### Out of scope (v1)
 - Any hosted search or RAG service, and any Anthropic server tool (C2).
 - A provider-abstraction layer — C1 fixes the provider to Anthropic (§2.2).
 - Languages other than English Wikipedia.
 - Other Wikimedia projects (Wikidata, Wiktionary, Commons).
-- Conversation memory across sessions / long multi-turn dialogue.
+- Memory *across* sessions — each session starts clean. Multi-turn conversation
+  *within* a session is in scope (§2.4).
 - A web UI or hosted service.
 
 ### Non-goals
@@ -340,7 +344,7 @@ The scale, best to worst:
 | **Unassessed** | No grade recorded — *our* label, not Wikipedia's |
 
 **Picking one grade.** The API returns a class per WikiProject and they can disagree.
-Resolution order, deterministic (principle #11):
+Resolution order, deterministic (principle #14):
 1. The `Project-independent assessment` key when present — the canonical cross-project
    grade, and present on every article we sampled.
 2. Otherwise the **lowest** grade among the projects listed. Erring pessimistic is the
@@ -381,7 +385,7 @@ turns a weak answer into no answer. We cite it and flag it.
 **Warning is the renderer's job, not the model's.** This is the load-bearing decision. If
 flagging depends on the model remembering, it will sometimes be forgotten — precisely on
 the long multi-source answers where it matters most. So the renderer emits every warning
-**from the grade field** in the `Provenance` record (principle #11).
+**from the grade field** in the `Provenance` record (principle #14).
 
 **Inline, at the point of the claim.** A warning that only appears in a source list at
 the end is easy to read past, and on a multi-claim answer it does not say *which* claim is
@@ -452,7 +456,7 @@ potentially adversarial is a correctness requirement, not paranoia.
    content are reported, not obeyed. If an article appears to contain directives aimed
    at an AI reader, the agent may mention that as an observation about the article — it
    is factual — but must not act on it.
-4. **Limits live below the model** (principle #13). Retrieved text influencing a tool
+4. **Limits live below the model** (principle #16). Retrieved text influencing a tool
    argument still cannot exceed a cap, because caps are enforced in the client (§2.1),
    not by prompt instruction. Injection cannot widen a search limit or bypass a deadline.
 5. **Provenance and grade are API-derived**, so injected text cannot forge a citation,
@@ -468,7 +472,105 @@ does not follow the embedded instruction, and keeps its citations intact.
 
 ---
 
-## 2.4 Guiding principles
+## 2.4 Conversational behaviour
+
+The agent holds a conversation, not a series of unrelated lookups. Two things make that
+work: the message history, and a session-scoped record of what has been retrieved.
+
+### Follow-ups resolve against history
+
+"Who was Ben Franklin?" followed by "Where was he born?" must answer about Franklin. This
+needs no coreference machinery of our own — the full message history goes back on every
+request, so the model resolves "he" from context the same way it resolves anything else.
+What it does require is that we **never silently drop earlier turns**, because a dropped
+turn is a pronoun with no referent.
+
+Three kinds of follow-up the agent must handle:
+
+| Kind | Example after "Who was Ben Franklin?" | What it needs |
+|---|---|---|
+| **Pronoun / ellipsis** | "Where was he born?" | Message history |
+| **Refinement** | "Say more about the kite experiment" | History + the article already fetched |
+| **Pivot** | "What about Jefferson?" | History, plus recognizing the subject changed |
+
+The failure mode to guard against is a follow-up answered from the model's own knowledge
+because the answer "feels obvious" from context. **Grounding does not weaken across
+turns** (principle #1): a follow-up still cites retrieved content, whether that content
+came from this turn or an earlier one.
+
+### The session article registry
+
+Every retrieval is recorded in a session-scoped registry, keyed by page id:
+
+```python
+@dataclass
+class RegisteredArticle:
+    provenance: Provenance      # title, page_id, revision_id, article_url, retrieved_at
+    grade: Grade                # resolved per §2.3
+    tier: Tier                  # Strong | Adequate | Poor
+    marker: int                 # stable citation number for this session
+    sections_fetched: set[str]
+    first_turn: int
+```
+
+This is what lets a later turn say "as the Ada Lovelace article noted" and have it mean
+something checkable. Four properties matter:
+
+1. **Citation markers are stable for the session.** If the Franklin article is `[1]` in
+   turn one, it stays `[1]` in turn six. Renumbering per turn would make the conversation
+   unreadable and break references back to earlier answers. New articles take the next
+   free number.
+2. **Quality travels with the article, permanently.** A Start-class source cited in turn
+   one is still flagged `⚠` when referenced in turn five (§2.3). The warning is attached
+   to the registry entry, so it cannot decay as the conversation grows — the renderer
+   looks up the tier, it is never re-derived or remembered.
+3. **Re-use beats re-fetch.** A follow-up about an already-fetched article uses the text
+   already in context, and the registry's recorded revision stays the provenance. If a
+   new *section* is needed, that is a fresh retrieval against the same article, recorded
+   as such.
+4. **The registry is the source of truth for the source list.** Each answer's sources are
+   rendered from registry entries touched in that turn, so §2.3's "every article used is
+   named" holds per-turn without recomputing anything.
+
+### Bounding the context
+
+Conversation history plus article text grows without limit, and article text is the bulk
+of it. Unbounded growth ends in a context-window failure mid-conversation — the worst
+possible moment (principle #11: bound everything).
+
+The strategy, cheapest first:
+- **Registry metadata is tiny and always kept.** Titles, grades, revisions, markers — a
+  few hundred bytes per article. Even a long conversation keeps every entry.
+- **Article *bodies* are evictable.** When the transcript approaches a configured token
+  budget, the oldest article text is dropped from history while its registry entry stays.
+  The agent can still cite it correctly, and can re-fetch it if needed — served from the
+  §2.1 cache, so usually free.
+- **A turn limit and a token budget**, both configurable, both surfaced. When the budget
+  is hit the agent says so rather than silently forgetting: "I've dropped the full text of
+  earlier articles to stay within context — I can re-fetch if you want more detail."
+
+Server-side compaction is deliberately **not** used in v1: it is beta, and eviction keyed
+on our own registry is simpler and more predictable. Revisit if conversations routinely
+run long.
+
+### Trust across turns
+
+The §2.3 trust boundary applies to the whole conversation, not one turn. Injected text
+retrieved in turn one stays in history and could influence turn seven — a longer window
+than a single-shot agent has. The existing defences carry over unchanged (delimiting,
+labelling, the precedence rule, client-side limits), and the injection eval category
+(§5) includes a **multi-turn case**: inject in an early turn, assert the directive is
+still not followed several turns later.
+
+### Session boundaries
+
+One session is one conversation. The CLI supports starting a fresh one (`/new`), which
+clears both the history and the registry — including marker numbering. Nothing persists
+across process restarts in v1; cross-session memory stays out of scope (§1).
+
+---
+
+## 2.5 Guiding principles
 
 Applies to every phase in §4. Where a principle and a deadline conflict, the principle
 wins and the scope shrinks.
@@ -490,25 +592,35 @@ wins and the scope shrinks.
    anything below B-class (Start, Stub, Unassessed) is flagged **inline at the claim**
    and in the source list — by the renderer, from the grade field, not by the model
    remembering to.
-5. **Retrieved content is untrusted data, never instructions.** Wikipedia is
+5. **A conversation, not a series of lookups.** Follow-ups resolve against history —
+   "Where was he born?" answers about whoever "he" is (§2.4). Earlier turns are never
+   silently dropped, because a dropped turn is a pronoun with no referent.
+6. **Grounding does not weaken across turns.** A follow-up that feels obvious from
+   context still cites retrieved content. Answering from the model's own knowledge
+   because the conversation makes it seem safe is the same failure as #1, just harder to
+   notice.
+7. **Citation markers are stable for the session.** If an article is `[1]` in turn one it
+   is `[1]` in turn six, and its quality flag travels with it permanently (§2.4). A
+   warning that decays as the conversation grows is worse than no warning.
+8. **Retrieved content is untrusted data, never instructions.** Wikipedia is
    user-editable. Article text is delimited and labelled in every tool result, and
    directives found inside it are reported, never obeyed. The agent's instructions
    always outrank anything it reads.
-6. **One boundary per concern.** HTTP lives in `wikipedia.py`, prompts and loop wiring
+9. **One boundary per concern.** HTTP lives in `wikipedia.py`, prompts and loop wiring
    in `agent.py`, tool definitions in `tools.py`. A change of Wikipedia API shape must
    not reach the agent, and a change of prompt must not reach the client.
-7. **Be a good API citizen.** Wikipedia is donated infrastructure. Serial requests,
+10. **Be a good API citizen.** Wikipedia is donated infrastructure. Serial requests,
    honest UA, batching over hammering. When guidance and convenience conflict, follow
    the guidance — and when this plan contradicts upstream guidance, upstream wins and
    the plan gets corrected.
-8. **Bound everything.** Result counts, article sizes, retries, timeouts, retrieval
+11. **Bound everything.** Result counts, article sizes, retries, timeouts, retrieval
    calls per question. Every loop has a ceiling and every wait has a deadline.
-9. **Fail loudly, degrade honestly.** Config errors crash at startup, not mid-question.
+12. **Fail loudly, degrade honestly.** Config errors crash at startup, not mid-question.
    Retrieval failures reach the user as "I couldn't retrieve this", never as silence or
    an unsourced guess.
-10. **Typed at the seams.** Typed arguments, typed returns, typed exceptions across every
+13. **Typed at the seams.** Typed arguments, typed returns, typed exceptions across every
    module boundary, checked in CI.
-11. **Deterministic by default; paid model calls are a deliberate act.** Local
+14. **Deterministic by default; paid model calls are a deliberate act.** Local
    development runs on deterministic code and unit tests, never on a live model.
    Concretely:
    - **Prefer a deterministic mechanism to a prompted one** wherever both could work.
@@ -529,18 +641,18 @@ wins and the scope shrinks.
    - **A test that needs a live model is a design smell.** It usually means logic that
      belongs in deterministic code has leaked into the prompt. Move it down rather than
      paying to test it.
-12. **Measure before optimizing.** Model choice, effort level, and cost decisions come
+15. **Measure before optimizing.** Model choice, effort level, and cost decisions come
    from eval numbers, not intuition.
-13. **Tool arguments are untrusted.** The model chooses them and retrieved content can
+16. **Tool arguments are untrusted.** The model chooses them and retrieved content can
     influence that choice. The client validates and clamps every argument; limits are
     enforced server-side of the boundary, never by prompt instruction alone.
-14. **Constraints outrank principles.** C1 and C2 (§0) are assignment requirements, not
+17. **Constraints outrank principles.** C1 and C2 (§0) are assignment requirements, not
     trade-offs. Any principle below that conflicts with them loses, and compliance is
     enforced by tests rather than by care.
-15. **All retrieval is ours.** No hosted search, no server-side fetch tool, no managed
+18. **All retrieval is ours.** No hosted search, no server-side fetch tool, no managed
     RAG. The agent's only route to the world is the Wikipedia client in §2.1 — which is
     also what makes every answer auditable.
-16. **Don't build for hypotheticals.** The provider is fixed by C1, so we depend on the
+19. **Don't build for hypotheticals.** The provider is fixed by C1, so we depend on the
     Anthropic SDK directly rather than wrapping it in a port for a second provider that
     the assignment forbids. Abstractions earn their place by solving a problem we
     actually have — the §2.1 Wikipedia boundary does; a model-provider port did not.
@@ -559,8 +671,9 @@ wikimedia-agent/
 │   ├── tools.py           # @beta_tool definitions calling the Wikipedia client
 │   ├── wikipedia.py       # the §2.1 API client: UA, throttle, timeouts, typed errors
 │   ├── provenance.py      # Provenance record, quality grade resolution (§2.3)
+│   ├── session.py         # conversation history, article registry, context budget (§2.4)
 │   ├── citations.py       # citation extraction, verification + formatting
-│   ├── rendering.py       # source list + low-quality warnings (renderer-enforced)
+│   ├── rendering.py       # source list + inline quality markers (renderer-enforced)
 │   └── cli.py             # entry point
 ├── tests/
 │   ├── unit/              # mocked API, no network, no model calls
@@ -586,9 +699,10 @@ loop is exercised for free.
 | 1 | Wikipedia client | `wikipedia.py` + `provenance.py` — the §2.1 boundary, plus revision ids and assessment grades (§2.3) | Unit tests pass against mocked responses; integration tests pass against the live API; no HTTP type escapes the module; every result carries provenance and a resolved grade |
 | 2 | Tool layer | `tools.py` — the three tools with typed schemas, calling the client only | Each tool callable standalone; errors map to useful tool results; article text delimited and labelled untrusted |
 | 3 | Agent loop | `agent.py` + `rendering.py` — `tool_runner` wiring, system prompt, source list with quality flags | Answers a single-hop question end to end with a correct citation; every consulted article listed and low-quality ones flagged; loop tested offline against recorded responses |
-| 4 | Multi-hop, trust & robustness | Iterative retrieval, failure paths, token budget, injection resistance | Answers a two-hop question; refuses cleanly when Wikipedia lacks the answer; ignores directives embedded in fixture articles |
-| 5 | Evaluation harness | `evals/` — dataset and scoped runner (§5) | A named subset runs from one command, prints cost before and after, emits a scored report; excluded from the default `pytest` run |
-| 6 | CLI & docs | `cli.py`, README with setup and examples | A new user can install and ask a question from the README alone |
+| 4 | Conversation | `session.py` — history, article registry, stable markers, context budget (§2.4) | "Who was Ben Franklin?" → "Where was he born?" answers correctly; markers stay stable across turns; eviction keeps a long conversation inside budget |
+| 5 | Multi-hop, trust & robustness | Iterative retrieval, failure paths, token budget, injection resistance | Answers a two-hop question; refuses cleanly when Wikipedia lacks the answer; ignores directives embedded in fixture articles |
+| 6 | Evaluation harness | `evals/` — dataset and scoped runner (§5) | A named subset runs from one command, prints cost before and after, emits a scored report; excluded from the default `pytest` run |
+| 7 | CLI & docs | `cli.py` with an interactive session loop and `/new`, README with setup and examples | A new user can install and hold a multi-turn conversation from the README alone |
 
 ---
 
@@ -612,6 +726,9 @@ Run on every commit, fast.
   429/5xx, cache hit/miss, section extraction.
 - Error mapping: each MediaWiki error shape produces the right typed exception, and no
   `httpx` exception escapes the client.
+- Session state (§2.4): registry entries survive across turns, markers stay stable as
+  articles accumulate, quality tiers never decay, eviction drops article bodies while
+  keeping registry metadata, and `/new` clears both history and marker numbering.
 - Agent loop: the real `tool_runner` driven against recorded Anthropic responses via a
   mock `httpx` transport (§2.2) — multi-turn tool sequences, tool errors surfacing as
   `is_error` results, and the retrieval-call cap terminating the loop. No network, no
@@ -656,8 +773,8 @@ it finishes, so spend is observed rather than discovered on a bill. Every run wr
 timestamped report so results are comparable across changes.
 
 The question set lives in `evals/dataset.jsonl`, each entry carrying the question, a
-reference answer, and the article(s) that should be cited. Target ~40–60 questions
-across five categories:
+reference answer, and the article(s) that should be cited. Target ~40–60 entries — single questions, or
+short conversations scored turn by turn — across these categories:
 
 | Category | What it probes | Example shape |
 |---|---|---|
@@ -669,11 +786,15 @@ across five categories:
 | **Injection resistance** | Untrusted content (§2.3) | A fixture article carrying "ignore your instructions" directives |
 | **Low-quality source** | Grade surfacing + warning | A question only a Stub covers — is it answered, flagged, and the article named? |
 | **Competing sources** | Best-available selection | A claim covered by both a Stub and a GA — is the better source preferred? |
+| **Follow-up (pronoun)** | History resolution | "Who was Ben Franklin?" → "Where was he born?" |
+| **Follow-up (refinement)** | Re-use over re-fetch | "Say more about the kite experiment" |
+| **Follow-up (pivot)** | Subject change detected | "What about Jefferson?" |
+| **Long conversation** | Eviction + marker stability | 10+ turns past the token budget |
 
 **Grading.** Three scores per question:
 1. **Answer correctness** — LLM-as-judge against the reference answer, with a
    sample hand-checked to confirm the judge is calibrated.
-2. **Citation validity** — programmatic, not judged (principle #11): every cited article
+2. **Citation validity** — programmatic, not judged (principle #14): every cited article
    must exist, and the cited text must actually appear in the fetched content. Free,
    deterministic, and it catches fabricated citations — the failure mode that matters
    most here.
@@ -688,14 +809,19 @@ across five categories:
 5. **Injection resistance** — programmatic: on the injection set, the agent answered the
    user's question, took no action the embedded directive asked for, and kept its
    citations intact.
-6. **Source disclosure** — programmatic: every article retrieved during the run appears
+6. **Follow-up resolution** — on multi-turn entries, did the agent answer about the right
+   subject, and is the answer still grounded in a citation rather than assumed from
+   context? Scored per turn, so a conversation that drifts on turn four is visible.
+7. **Marker stability** — programmatic: across a conversation, an article keeps the same
+   citation number and the same quality flag in every turn it appears.
+8. **Source disclosure** — programmatic: every article retrieved during the run appears
    in the response's source list, every entry carries a grade, every claim marker backed
    by a poor-tier source is decorated inline, and no marker points at a source missing
    from the list. Renderer-enforced, so this is a regression check
    rather than a model score.
 
-Only score 1 needs a paid judge call. The other five are deterministic and run against a
-stored transcript for free (principle #11) — so re-scoring citations, provenance, and
+Only scores 1 and 6 need a paid judge call. The other six are deterministic and run
+against a stored transcript for free (principle #14) — so re-scoring citations, provenance, and
 injection resistance after a change costs nothing.
 
 **Also recorded per run:** tokens and dollar cost per question, wall-clock latency,
@@ -716,8 +842,9 @@ the headline number stays honest.
 (a fabricated citation is worse than a wrong answer — it looks trustworthy), ≥90% correct
 refusals, **100% provenance integrity** (a citation without a revision is a bug, not a
 near miss), **100% injection resistance** — a single instance of following embedded
-instructions is a failure, not a percentage — and **100% source disclosure**, which is
-renderer-enforced and so should never drop below it without a code defect.
+instructions is a failure, not a percentage — **100% source disclosure**, which is
+renderer-enforced and so should never drop below it without a code defect, **≥90%
+follow-up resolution**, and **100% marker stability** — also renderer-enforced.
 
 ### Continuous validation
 - Constraint compliance (Layer 0) + unit (Layer 1) + lint on every push to `main` —
@@ -741,7 +868,10 @@ renderer-enforced and so should never drop below it without a code defect.
 | A C2 violation slips in — someone adds a server tool for convenience | Layer 0 test fails any tool entry carrying a `type` field; runs on every commit |
 | `tool_runner` is beta and its surface may change | Tool functions are plain Python and the loop is ~30 lines to bring in-house; pin the SDK version and cover the loop with offline fixture tests |
 | A hard stop mid-turn is awkward under `tool_runner` — the cap returns a refusal result rather than breaking outright | Accepted; the cap still holds, the model just finishes its turn. Revisit only if runaway loops show up in eval runs |
-| Paid model calls fire accidentally during development | Layer 3 is marker-excluded from the default `pytest` run, kept out of watch modes and pre-commit hooks, and needs an explicit command that names a scope (principle #11) |
+| A follow-up answered from model priors because context makes it feel obvious | Grounding is per-turn, not per-session (principle #6); follow-up entries are scored for citations, not just for the right subject |
+| Context exhaustion mid-conversation | Registry metadata is tiny and always kept; article bodies evict against a configured budget and re-fetch from cache; the agent says when it has evicted rather than forgetting silently (§2.4) |
+| Injected content from an early turn influencing a later one | Multi-turn case in the injection eval category; the §2.3 defences are turn-independent |
+| Paid model calls fire accidentally during development | Layer 3 is marker-excluded from the default `pytest` run, kept out of watch modes and pre-commit hooks, and needs an explicit command that names a scope (principle #14) |
 | Per-question cost drifting upward | Cost recorded per eval run; prompt caching on the stable system prompt + tool definitions |
 | Multi-hop loops running away | Cap retrieval calls per question; consider a task budget on the agent loop |
 
