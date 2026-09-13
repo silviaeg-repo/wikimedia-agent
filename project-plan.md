@@ -33,8 +33,9 @@ inline citations back to the source articles.
 ## 2. Architecture
 
 **Retrieval:** live Wikimedia APIs, queried at question time. Always current, no
-ingestion pipeline, no index staleness. The cost is per-question latency, which we
-mitigate with caching and concurrent fetches.
+ingestion pipeline, no index staleness. The cost is per-question latency. We mitigate
+it with caching and with batching several titles into one request — *not* with
+concurrency, which the API etiquette rules out (§2.1).
 
 **Stack:** Python 3.11+, the official `anthropic` SDK, `httpx` for the Wikipedia
 calls, `pytest` for tests.
@@ -78,14 +79,122 @@ article and section behind each factual claim, and say plainly when retrieval ca
 back empty or contradictory. Citations are what make the agent auditable and what
 §5 grades against.
 
-### Operational requirements
-- **User-Agent header on every request.** The Wikimedia API policy requires a
-  descriptive UA with contact info; requests without one get rate-limited or blocked.
-  This is not optional and is checked in tests.
-- **Rate limiting and retries.** Conservative concurrency cap, exponential backoff on
-  429/5xx.
-- **Response caching.** Keyed on endpoint + params, TTL-bounded (articles change).
-  Cuts both latency and API load, and makes the eval suite reproducible and cheap.
+---
+
+## 2.1 The Wikipedia client boundary
+
+All Wikipedia access lives behind one small client in `wikipedia.py`. **Nothing above
+that module knows HTTP exists.** The tool layer calls typed Python methods and gets
+back typed results or typed exceptions — never a `Response`, never a status code,
+never a raw JSON dict. Swapping to a different MediaWiki endpoint, or to a recorded
+fixture in tests, should touch exactly one file.
+
+This boundary is what makes the eval harness (§5) cheap and deterministic: tests
+substitute a fake client without a single mocked HTTP call.
+
+The client's obligations follow the
+[MediaWiki API etiquette guidance](https://www.mediawiki.org/wiki/API:Etiquette) and
+[api.php](https://en.wikipedia.org/w/api.php).
+
+### Descriptive User-Agent — mandatory
+The documented format is
+`clientname/version (contact information e.g. username, email) framework/version`.
+Wikimedia blocks non-compliant clients by IP **without notice**, so this is a hard
+requirement, not a nicety:
+- Set centrally in the client constructor; no request path can bypass it.
+- Contact info comes from config, and startup **fails loudly** if it is unset — a
+  placeholder UA is the same violation as no UA.
+- A unit test asserts the header is present and well-formed on every request.
+
+### Throttling — serial requests, not parallel
+The guidance is explicit: *"Making your requests in series rather than in parallel, by
+waiting for one request to finish before sending a new request, should result in a safe
+request rate."*
+
+- **The client serializes all outbound requests.** No connection-pool concurrency, no
+  `asyncio.gather` over fetches. This corrects the earlier "concurrent fetches" plan.
+- A minimum interval between requests, configurable, defaulting to a conservative value.
+- **Batch instead of parallelize.** Multivalue parameters (`titles=A|B|C`) fetch several
+  pages in one call — the sanctioned way to go faster. Cap at 50 titles per request,
+  the documented limit for ordinary clients.
+- On `ratelimited` / 429 / 5xx: **exponential backoff with jitter**, a bounded retry
+  count, then a structured error. Honour `Retry-After` when present.
+- `maxlag` is deliberately **not** set by default. The guidance scopes it to
+  non-interactive tasks; ours has a user waiting. The client accepts it as an option so
+  batch eval runs can set `maxlag=5` and be a good citizen under load.
+
+### Bounded search limits
+No unbounded result sets, ever:
+- `search_wikipedia` takes `limit`, defaulting to 5, hard-capped at 20. The API permits
+  500, but anything past the first handful is context-window spend with no answer value.
+- Article fetches are section-scoped by default; whole-article retrieval is opt-in and
+  size-capped, truncating at a documented character budget rather than returning
+  something that overflows the context window.
+- The cap is enforced *in the client*, so no prompt-injected tool argument can raise it.
+
+### Explicit timeouts
+- Explicit connect and read timeouts on every request — no library default, no
+  unbounded wait. A hung request must surface as a `WikipediaTimeout` the agent can
+  report, not a stalled session.
+- A total per-question retrieval deadline, so backoff and retries cannot compound into
+  an unbounded wait.
+
+### Structured errors
+The client raises a typed exception hierarchy; it never returns `None` for failure and
+never leaks an `httpx` exception upward:
+
+```
+WikipediaError
+├── PageNotFound(title)
+├── DisambiguationError(title, options)   # carries candidates, so the agent can retry
+├── WikipediaTimeout(url, elapsed)
+├── RateLimited(retry_after)
+└── WikipediaAPIError(code, info)         # from MediaWiki-API-Error / the error block
+```
+
+MediaWiki signals errors via the `MediaWiki-API-Error` header and an error code in the
+body — the client parses both into `WikipediaAPIError` rather than inspecting status
+codes alone. `DisambiguationError` carrying its options is what lets the agent recover
+in-loop instead of dead-ending.
+
+### Response caching
+Keyed on endpoint + normalized params, TTL-bounded (articles change). Cuts latency and
+API load, and makes eval runs reproducible and cheap.
+
+---
+
+## 2.2 Guiding principles
+
+Applies to every phase in §4. Where a principle and a deadline conflict, the principle
+wins and the scope shrinks.
+
+1. **Ground everything, invent nothing.** Every factual claim traces to retrieved text.
+   No answer from model priors, however confident. "I don't know" is a correct answer
+   and is graded as one (§5).
+2. **A fabricated citation is the worst failure.** It is worse than a wrong answer,
+   because it looks trustworthy. Hence citations are verified programmatically and held
+   to a stricter bar than correctness.
+3. **One boundary per concern.** HTTP lives in `wikipedia.py`, prompts in `agent.py`,
+   schemas in `tools.py`. A change of API shape must not reach the agent, and a change
+   of prompt must not reach the client.
+4. **Be a good API citizen.** Wikipedia is donated infrastructure. Serial requests,
+   honest UA, batching over hammering. When guidance and convenience conflict, follow
+   the guidance — and when this plan contradicts upstream guidance, upstream wins and
+   the plan gets corrected.
+5. **Bound everything.** Result counts, article sizes, retries, timeouts, retrieval
+   calls per question. Every loop has a ceiling and every wait has a deadline.
+6. **Fail loudly, degrade honestly.** Config errors crash at startup, not mid-question.
+   Retrieval failures reach the user as "I couldn't retrieve this", never as silence or
+   an unsourced guess.
+7. **Typed at the seams.** Typed arguments, typed returns, typed exceptions across every
+   module boundary, checked in CI.
+8. **Test without the network or the model.** Layers 1 and 2 (§5) must stay runnable
+   offline and free. Only Layer 3 spends money, and it is opt-in.
+9. **Measure before optimizing.** Model choice, effort level, and cost decisions come
+   from eval numbers, not intuition.
+10. **Tool arguments are untrusted.** The model chooses them and retrieved content can
+    influence that choice. The client validates and clamps every argument; limits are
+    enforced server-side of the boundary, never by prompt instruction alone.
 
 ---
 
@@ -120,8 +229,8 @@ without spending a cent on model calls.
 | # | Phase | Deliverable | Done when |
 |---|---|---|---|
 | 0 | Plan & scaffold | This document, `pyproject.toml`, CI skeleton | Plan committed; `pytest` runs green on an empty suite |
-| 1 | Wikipedia client | `wikipedia.py` — UA, retries, caching, section fetch | Unit tests pass against mocked responses; integration tests pass against the live API |
-| 2 | Tool layer | `tools.py` — the three tools with typed schemas | Each tool callable standalone; bad titles, disambiguation pages, and empty results handled |
+| 1 | Wikipedia client | `wikipedia.py` — the §2.1 boundary: UA, serial throttle, bounded limits, timeouts, typed errors, caching | Unit tests pass against mocked responses; integration tests pass against the live API; no HTTP type escapes the module |
+| 2 | Tool layer | `tools.py` — the three tools with typed schemas, calling the client only | Each tool callable standalone; `PageNotFound` / `DisambiguationError` / timeouts map to useful tool results |
 | 3 | Agent loop | `agent.py` + system prompt + citation formatting | Answers a single-hop question end to end with a correct citation |
 | 4 | Multi-hop & robustness | Iterative retrieval, retrieval-failure paths, token budget | Answers a two-hop question; refuses cleanly when Wikipedia lacks the answer |
 | 5 | Evaluation harness | `evals/` — dataset and runner (§5) | Full suite runs, emits a scored report, per-question cost recorded |
@@ -136,8 +245,12 @@ so we are never tuning against a moving target.
 
 ### Layer 1 — Unit tests (no network, no model)
 Run on every commit, fast.
-- Wikipedia client: URL construction, UA header present, retry/backoff behaviour,
-  cache hit/miss, section extraction.
+- Wikipedia client: URL construction, UA header present and well-formed on every
+  request, startup failure on unset contact info, serial-request enforcement and the
+  minimum interval, `limit` clamping at the cap, explicit timeouts set, backoff on
+  429/5xx, cache hit/miss, section extraction.
+- Error mapping: each MediaWiki error shape produces the right typed exception, and no
+  `httpx` exception escapes the client.
 - Tool functions against recorded fixtures: normal article, disambiguation page,
   missing title, redirect, very long article.
 - Citation formatting and parsing.
@@ -195,7 +308,7 @@ the headline number stays honest.
 | Risk | Mitigation |
 |---|---|
 | Fabricated citations — the answer looks sourced but isn't | Programmatic citation verification in the eval suite, scored separately and held to a higher bar than answer correctness |
-| Wikipedia API rate limits or blocks | Compliant User-Agent, conservative concurrency, backoff, caching |
+| Wikimedia IP-blocks us for non-compliant access | Mandatory descriptive UA that startup enforces, strictly serial requests, batching, backoff, caching (§2.1) |
 | Long articles exhausting the context window | Section-scoped fetching; summary-first disambiguation |
 | Wikipedia content itself being wrong or vandalised | Out of our control — we ground and cite, so the user can check the source. Document this limitation in the README |
 | Per-question cost drifting upward | Cost recorded per eval run; prompt caching on the stable system prompt + tool definitions |
