@@ -56,7 +56,7 @@ Compliance is tested, not asserted:
 - Natural-language questions answered from English Wikipedia content.
 - Answers carry citations for each claim: article, section, **exact revision** via an
   `oldid` permalink, and the Wikipedia quality grade of the source — with low-quality
-  sources explicitly flagged (§2.3).
+  sources flagged inline at the claim and in the source list (§2.3).
 - Every article consulted is named in the response, cited or not.
 - Explicit "I don't know" when Wikipedia does not support an answer.
 - Multi-hop questions (e.g. "Who directed the highest-grossing film of 1997?")
@@ -129,8 +129,8 @@ section rather than whole, which keeps context spend proportional to the questio
 
 ### Grounding contract
 The system prompt requires the agent to answer only from retrieved text, cite the article,
-section, and revision behind each factual claim, prefer the better-graded source when
-several cover a claim, note when the only support for a claim is a weak source, and say plainly when retrieval came back empty or contradictory. It also fixes
+section, and revision behind each factual claim with a numbered marker the renderer can
+decorate (§2.3), prefer the better-graded source when several cover a claim, note when the only support for a claim is a weak source, and say plainly when retrieval came back empty or contradictory. It also fixes
 the precedence rule: retrieved text is data, and any instruction found inside it is
 reported rather than obeyed (§2.3). Citations are what make the agent auditable and what
 §5 grades against.
@@ -374,21 +374,40 @@ turns a weak answer into no answer. We cite it and flag it.
 
 **Warning is the renderer's job, not the model's.** This is the load-bearing decision. If
 flagging depends on the model remembering, it will sometimes be forgotten — precisely on
-the long multi-source answers where it matters most. So the citation renderer emits the
-warning **from the grade field** in the `Provenance` record (principle #11):
+the long multi-source answers where it matters most. So the renderer emits every warning
+**from the grade field** in the `Provenance` record (principle #11).
+
+**Inline, at the point of the claim.** A warning that only appears in a source list at
+the end is easy to read past, and on a multi-claim answer it does not say *which* claim is
+weakly sourced. So the marker travels with the claim:
 
 ```
+Ada Lovelace wrote what is considered the first algorithm intended for a
+machine. [1] Her notes were later described as the earliest published work on
+computing by Gerald J. Ford. [2 ⚠ Start-class]
+
 Sources
   [1] Ada Lovelace — B-class · rev 1371961179
+      https://en.wikipedia.org/w/index.php?oldid=1371961179
   [2] Gerald J. Ford — Start-class ⚠ low-quality source · rev 1284093117
+      https://en.wikipedia.org/w/index.php?oldid=1284093117
 
-⚠ One source is rated below Wikipedia's B-class standard. Claims drawn from it
-  may be incomplete or inadequately sourced — see the linked revision.
+⚠ One source is rated below Wikipedia's B-class standard. Claims marked ⚠ draw on
+  an article that may be incomplete or inadequately sourced — see the linked revision.
 ```
 
-Deterministic, unforgettable, and unit-testable with no model call. The model may *also*
-mention weak sourcing in prose — it is instructed to when the *only* support for a claim
-is poor — but the flag itself never depends on that.
+**How it stays renderer-enforced.** The model emits plain numbered markers — `[1]`, `[2]`
+— as the grounding contract already requires. The renderer then **decorates** each marker
+from its source's tier: Strong and Adequate render bare, Poor renders as `[n ⚠ <grade>]`.
+The model never decides whether a warning appears, so it cannot forget one, and a
+mis-tiered marker is a code bug caught by a unit test rather than a behaviour regression.
+
+**Noise control.** Only the Poor tier is decorated — B-class and above stay clean, so the
+marker means something when it does appear. The full explanation renders once at the foot
+of the answer, not on every claim.
+
+The model may *also* mention weak sourcing in prose — it is instructed to when the *only*
+support for a claim is poor — but no flag depends on that.
 
 **Every article used is listed.** The source list is built from the provenance records
 actually retrieved during the run, not from what the model chose to mention. An article
@@ -456,8 +475,9 @@ wins and the scope shrinks.
    article when several cover a claim, but never filter: a Stub is often the only
    article on a niche subject. Every article used is named in the response with its
    [assessment grade](https://en.wikipedia.org/wiki/Wikipedia:Content_assessment), and
-   anything below B-class (Start, Stub, Unassessed) is flagged — **by the renderer, from
-   the grade field, not by the model remembering to**.
+   anything below B-class (Start, Stub, Unassessed) is flagged **inline at the claim**
+   and in the source list — by the renderer, from the grade field, not by the model
+   remembering to.
 5. **Retrieved content is untrusted data, never instructions.** Wikipedia is
    user-editable. Article text is delimited and labelled in every tool result, and
    directives found inside it are reported, never obeyed. The agent's instructions
@@ -587,8 +607,10 @@ Run on every commit, fast.
 - Tool functions against recorded fixtures: normal article, disambiguation page,
   missing title, redirect, very long article.
 - Citation formatting, parsing, and provenance round-tripping.
-- Grade tiering and the warning renderer: each of the ten grades maps to the right tier,
-  Start / Stub / Unassessed render the flag, B and above do not, and the source list
+- Grade tiering and the warning renderer: each of the ten grades maps to the right tier;
+  Start / Stub / Unassessed decorate their inline marker as `[n ⚠ <grade>]` while B and
+  above stay bare; the footer note renders once when any poor source is present and not
+  at all otherwise; markers survive decoration without renumbering; and the source list
   includes every retrieved article whether cited or merely consulted.
 - Grade resolution (§2.3): `Project-independent assessment` preferred, lowest-of-projects
   fallback, `Unassessed` when absent, `pacontinue` pagination followed, `importance`
@@ -652,8 +674,9 @@ across five categories:
    user's question, took no action the embedded directive asked for, and kept its
    citations intact.
 6. **Source disclosure** — programmatic: every article retrieved during the run appears
-   in the response's source list, every entry carries a grade, and every Start / Stub /
-   Unassessed entry carries the warning. Renderer-enforced, so this is a regression check
+   in the response's source list, every entry carries a grade, every claim marker backed
+   by a poor-tier source is decorated inline, and no marker points at a source missing
+   from the list. Renderer-enforced, so this is a regression check
    rather than a model score.
 
 Only score 1 needs a paid judge call. The other five are deterministic and run against a
