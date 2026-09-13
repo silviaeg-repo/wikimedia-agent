@@ -161,7 +161,7 @@ def test_an_empty_scope_reports_rather_than_running(capsys):
 
 
 def test_the_estimate_stays_in_the_right_order_of_magnitude():
-    """Calibrated against a real run: 2 single-hop entries cost ~$0.06 for the
-    agent. An estimate should err high, but a 3x overshoot stops being useful."""
-    projected = estimate(2, "claude-opus-5", "claude-sonnet-5", judged=False)
-    assert 0.05 <= projected <= 0.15, projected
+    """Calibrated against a full 12-entry run costing $0.40 judged. An estimate
+    should err high, but a 2x overshoot stops being informative."""
+    projected = estimate(12, "claude-opus-5", "claude-sonnet-5", judged=True)
+    assert 0.40 <= projected <= 0.80, projected

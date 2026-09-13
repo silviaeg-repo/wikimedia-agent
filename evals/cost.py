@@ -15,15 +15,16 @@ PRICING_USD_PER_MTOK = {
     "claude-haiku-4-5": (1.00, 5.00),
 }
 
-# Calibrated against the first real run (2026-09-13): single-hop entries used
-# 2,960-5,496 input and 220-519 output tokens each, growing with the number of
-# retrievals. These sit above that range, since multi-hop and conversation
-# entries retrieve more -- an estimate should err high, but not so high that it
-# stops being informative.
-TYPICAL_INPUT_TOKENS_PER_ENTRY = 8_000
-TYPICAL_OUTPUT_TOKENS_PER_ENTRY = 600
-TYPICAL_JUDGE_INPUT_TOKENS = 6_000
-TYPICAL_JUDGE_OUTPUT_TOKENS = 250
+# Calibrated against a full 12-entry run (2026-09-13): 47,091 agent input and
+# 4,104 output tokens, plus 26,523 judge input and 995 output -- roughly 3,900 /
+# 340 per entry for the agent and 2,200 / 80 for the judge. These sit above that,
+# because multi-turn conversation entries cost more per entry than the
+# single-question ones in that sample. An estimate should err high, but a 2x
+# overshoot stops being informative.
+TYPICAL_INPUT_TOKENS_PER_ENTRY = 6_000
+TYPICAL_OUTPUT_TOKENS_PER_ENTRY = 500
+TYPICAL_JUDGE_INPUT_TOKENS = 3_000
+TYPICAL_JUDGE_OUTPUT_TOKENS = 150
 
 
 def price(model: str, input_tokens: int, output_tokens: int) -> float:

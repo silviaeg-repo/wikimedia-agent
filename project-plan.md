@@ -1325,6 +1325,37 @@ instructions is a failure, not a percentage — **100% source disclosure**, whic
 renderer-enforced and so should never drop below it without a code defect, **≥90%
 follow-up resolution**, and **100% marker stability** — also renderer-enforced.
 
+### Baseline (first full run, 2026-09-13)
+
+Recorded so later runs have something to move against. Judge version
+`claude-sonnet-5/1.0.0/effort=low`, 12 entries, $0.40.
+
+| Criterion | Result |
+|---|---|
+| answer_correctness | 12/12 |
+| citation_validity | 11/11 |
+| grounding | 9/9 |
+| provenance_integrity | 6/6 |
+| source_disclosure | 8/8 |
+| asks_for_clarification | 1/1 |
+| does_not_ask | 1/1 |
+| refusal_correctness | **0/2 — scorer defect, since fixed (see above)** |
+
+Two things this run established beyond the numbers:
+
+- **The only failures were false alarms.** The agent declined both
+  not-in-Wikipedia questions correctly; the phrase-matching scorer did not
+  recognise it (principle #16).
+- **Ambiguity already behaves**, before Phase 11 builds for it: asked to "tell me
+  about Mercury", the agent searched, found the subject ambiguous, listed
+  described candidates and asked — without citing the disambiguation page. What it
+  did *not* exercise is the `DisambiguationError` path, since it never called
+  `get_article` on the disambiguation title. Phase 11 needs a case that forces
+  that route.
+
+**Not a quality signal yet.** Twelve entries across eight categories is enough to
+show the pipeline works end to end; §5's bar needs 40-60.
+
 ### Continuous validation
 - Constraint compliance (Layer 0) + unit (Layer 1) + lint on every push to `main` —
   all free and offline.
