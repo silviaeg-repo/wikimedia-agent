@@ -7,6 +7,7 @@ so these run first and on every commit.
 from __future__ import annotations
 
 import pathlib
+from typing import Any
 
 import httpx
 
@@ -108,3 +109,63 @@ def test_retrieval_is_our_own_http_client():
     tools = _tools()
     assert isinstance(tools.client, WikipediaClient)
     assert tools.client.api_url.endswith("/w/api.php")
+
+
+# -- what actually goes over the wire (C1 + C2) ---------------------------
+
+
+def _run_one_exchange():
+    """Drive one complete agent exchange offline and return the recorder."""
+    from tests.helpers import RecordedAnthropic, assistant_message, text_block
+    from wikimedia_agent.agent import WikipediaAgent
+
+    api = RecordedAnthropic(assistant_message(content=[text_block("Answer.")]))
+    empty: dict[str, Any] = {"query": {"pages": []}}
+    wiki = WikipediaClient(
+        contact=CONTACT,
+        transport=httpx.MockTransport(lambda _r: httpx.Response(200, json=empty)),
+        min_interval=0.0,
+    )
+    agent = WikipediaAgent(tools=WikipediaTools(client=wiki), client=api.client())
+    agent.ask("Anything.")
+    return api, agent
+
+
+def test_no_tool_sent_to_the_api_carries_a_type_field():
+    """The same structural check, applied to the real outbound request."""
+    api, _ = _run_one_exchange()
+    for tool in api.tools_sent(0):
+        assert "type" not in tool, (
+            f"C2 violation: tool {tool.get('name')!r} was sent with a `type` field, "
+            "which identifies an Anthropic server tool."
+        )
+
+
+def test_only_our_three_tools_are_sent():
+    api, _ = _run_one_exchange()
+    assert {tool["name"] for tool in api.tools_sent(0)} == {
+        "search_wikipedia",
+        "get_summary",
+        "get_article",
+    }
+
+
+def test_no_server_side_retrieval_features_are_requested():
+    """mcp_servers and container would both reach hosted capability."""
+    api, _ = _run_one_exchange()
+    request = api.requests[0]
+    for field_name in ("mcp_servers", "container"):
+        assert not request.get(field_name), f"C2 violation: request set {field_name!r}"
+
+
+def test_the_model_sent_is_an_anthropic_model():
+    api, agent = _run_one_exchange()
+    model = api.requests[0]["model"]
+    assert model.startswith("claude-"), f"C1 violation: model {model!r} is not Anthropic"
+    assert model == agent.model
+
+
+def test_the_request_goes_to_the_anthropic_messages_api():
+    from wikimedia_agent.agent import DEFAULT_MODEL
+
+    assert DEFAULT_MODEL.startswith("claude-")

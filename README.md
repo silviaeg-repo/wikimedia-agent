@@ -5,10 +5,10 @@ articles behind it, carries each source's [Wikipedia quality
 grade](https://en.wikipedia.org/wiki/Wikipedia:Content_assessment), and flags weak
 sources inline.
 
-> **Status: in development.** Built and tested through Phase 4 — the Wikipedia client
-> (search, summaries, section-scoped articles, batching, caching, provenance and quality
-> grades) and the tool layer the model will use. The agent loop itself arrives in Phase 5;
-> see [project-plan.md](project-plan.md) for the full plan and the thirteen build phases.
+> **Status: in development.** The agent answers questions end to end as of Phase 5.
+> Deterministic source rendering with inline quality flags (Phase 7), multi-turn
+> conversation (Phase 8) and the CLI (Phase 12) are still to come — see
+> [project-plan.md](project-plan.md) for the full plan and the thirteen build phases.
 
 ## What it does
 
@@ -29,7 +29,8 @@ sources inline.
 
 - **Python 3.9 or newer.** Check with `python3 --version`.
   (Phase 5 adds the `anthropic` SDK, which may raise this floor to 3.10+.)
-- An **Anthropic API key** — not needed yet; required from Phase 5 onward.
+- An **Anthropic API key** — required to run the agent. Everything else, including the
+  whole test suite, runs without one.
 - Network access to `en.wikipedia.org`.
 
 ## Getting started
@@ -67,6 +68,34 @@ export WIKIMEDIA_AGENT_CONTACT="you@example-domain.org"
 
 Use a real address or project URL you actually monitor.
 
+## Asking a question
+
+Set both variables, then ask:
+
+```bash
+export WIKIMEDIA_AGENT_CONTACT="you@example-domain.org"
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+```python
+from wikimedia_agent.agent import build_agent
+
+agent = build_agent()
+answer = agent.ask("Who was Ada Lovelace, and what is she known for?")
+
+print(answer.text)
+for source in answer.sources:
+    grade = answer.grades[source.page_id]
+    print(f"  {source.title} [{grade.label}] — {source.article_url}")
+print(f"{answer.input_tokens} in / {answer.output_tokens} out")
+```
+
+The agent retrieves before it answers, cites what it read, and declines rather than
+inventing. `answer.sources` is built from what was **actually retrieved**, not from what
+the model chose to mention.
+
+This is the first thing in the project that costs money — roughly a cent a question.
+
 ## Running the tests
 
 The default run is **offline and free** — no network, no API calls, no cost:
@@ -87,8 +116,14 @@ Lint and type checks:
 ruff check . && mypy
 ```
 
-Evals cost money and **never** run as part of `pytest`. They arrive in Phase 6 and are
-invoked explicitly with a scope:
+Anything that spends money is marked `eval` and **never** runs as part of `pytest`, in
+CI, or in a watch mode. Run the paid smoke check explicitly:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... WIKIMEDIA_AGENT_CONTACT=you@example-domain.org pytest -m eval -s
+```
+
+The scoped eval harness arrives in Phase 6:
 
 ```bash
 python -m evals.run --category single-hop --limit 5
@@ -184,6 +219,8 @@ QUALITY: Start -- Developing but quite incomplete. This is a low-quality source.
 | Typed results — search hits, articles, sections, summaries | `src/wikimedia_agent/models.py` |
 | Provenance records and quality grades | `src/wikimedia_agent/provenance.py` |
 | The three tools the model calls | `src/wikimedia_agent/tools.py` |
+| The agent loop | `src/wikimedia_agent/agent.py` |
+| The system prompt / grounding contract | `src/wikimedia_agent/prompts.py` |
 | Typed error hierarchy | `src/wikimedia_agent/errors.py` |
 | TTL response cache | `src/wikimedia_agent/cache.py` |
 | Constraint compliance checks | `tests/compliance/` |
@@ -204,7 +241,10 @@ Two design decisions worth knowing before reading the code:
 4. **Provenance and quality come from API metadata, never article text.** An article
    claiming to be Featured, or claiming a revision number, changes neither — which is
    what stops page content from forging its own credibility.
-5. **Bounds live in the client, not the caller.** Search limits, article size and batch
+5. **The agent loop is thin.** The Anthropic SDK's `tool_runner` drives it; this
+   project supplies the tools, the prompt and the bounds. Everything the agent knows
+   about Wikipedia arrives through the three tools.
+6. **Bounds live in the client, not the caller.** Search limits, article size and batch
    size are clamped inside `wikipedia.py`, so nothing above it — including, later, a
    model choosing tool arguments — can widen them.
 

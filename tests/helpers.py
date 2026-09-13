@@ -78,3 +78,75 @@ def recording_transport(
         return handler(request)
 
     return httpx.MockTransport(wrapper), seen
+
+
+# -- Anthropic API fixtures (§2.2) ----------------------------------------
+#
+# The real tool_runner is driven against recorded API responses through a mock
+# transport, so the agent loop is exercised offline and for free.
+
+
+def assistant_message(
+    *,
+    content: list[dict[str, Any]],
+    stop_reason: str = "end_turn",
+    message_id: str = "msg_test",
+) -> dict[str, Any]:
+    """A Messages API response body."""
+    return {
+        "id": message_id,
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-opus-5",
+        "content": content,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {"input_tokens": 100, "output_tokens": 20},
+    }
+
+
+def text_block(text: str) -> dict[str, Any]:
+    return {"type": "text", "text": text}
+
+
+def tool_use_block(name: str, tool_input: dict[str, Any], block_id: str) -> dict[str, Any]:
+    return {"type": "tool_use", "id": block_id, "name": name, "input": tool_input}
+
+
+class RecordedAnthropic:
+    """Serves scripted Messages API responses and records the requests sent.
+
+    ``requests`` holds the decoded request body of every call, so tests can
+    assert on what the loop actually put on the wire -- how tool results were
+    batched, what was echoed back, which tools were declared.
+    """
+
+    def __init__(self, *responses: dict[str, Any]) -> None:
+        self._responses = list(responses)
+        self.requests: list[dict[str, Any]] = []
+
+    def _handler(self, request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        self.requests.append(_json.loads(request.content))
+        index = min(len(self.requests) - 1, len(self._responses) - 1)
+        return httpx.Response(200, json=self._responses[index])
+
+    def client(self) -> Any:
+        from anthropic import Anthropic
+
+        return Anthropic(
+            api_key="test-key-not-real",
+            http_client=httpx.Client(transport=httpx.MockTransport(self._handler)),
+            max_retries=0,
+        )
+
+    @property
+    def call_count(self) -> int:
+        return len(self.requests)
+
+    def tools_sent(self, index: int = 0) -> list[dict[str, Any]]:
+        return list(self.requests[index].get("tools", []))
+
+    def messages_sent(self, index: int) -> list[dict[str, Any]]:
+        return list(self.requests[index].get("messages", []))
