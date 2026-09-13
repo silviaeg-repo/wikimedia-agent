@@ -568,7 +568,19 @@ That is a question a user can answer in one word. A list of bare titles is not.
 - **Ambiguity surfaces on every retrieval path** — summary and article alike — so no
   route into the client can silently return a disambiguation page as if it were content.
 - **A disambiguation page is never cited as a source.** It contains no content to ground
-  an answer in.
+  an answer in — and naming one is not an unsupported claim, so it draws no warning.
+
+  *Found in use, after Phase 12.* Mentioning the ambiguous title rendered as
+  `[?] ... Treat those claims as unsupported`, which reads as an accuracy warning about
+  the answer when the agent is simply saying it needs more information. A title the tools
+  reported as ambiguous now renders with no marker at all: it is a statement about the
+  *question*, not a claim about the world, so there is nothing to support and nothing to
+  warn about. Titles never retrieved and never reported ambiguous are still flagged —
+  that check is what catches a fabricated citation.
+
+- **Say what is needed, not how Wikipedia is organised.** "I need a bit more to go on —
+  which town or country?" is the useful form. Explaining that the title resolves to a
+  disambiguation page is internal detail the reader did not ask for.
 
 ### Validation
 

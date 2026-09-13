@@ -174,7 +174,8 @@ class WikipediaAgent:
                 "before an answer could be produced."
             )
             answer.rendered = render(
-                answer.text, answer.sources, answer.grades, registry=registry
+                answer.text, answer.sources, answer.grades, registry=registry,
+                ambiguous_titles=answer.clarifications,
             )
             return answer
 
@@ -188,7 +189,8 @@ class WikipediaAgent:
             )
 
         answer.rendered = render(
-            answer.text, answer.sources, answer.grades, registry=registry
+            answer.text, answer.sources, answer.grades, registry=registry,
+            ambiguous_titles=answer.clarifications,
         )
         return answer
 

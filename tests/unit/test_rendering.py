@@ -288,3 +288,72 @@ def test_an_unresolved_citation_is_reported_even_with_no_sources():
     assert out.unresolved == ["St. Mary's Church"]
     assert UNKNOWN_MARKER in out.text
     assert "not among the articles retrieved" in out.text
+
+
+# -- ambiguous titles are not fabricated citations (§2.4) -----------------
+#
+# Regression: naming the disambiguation page it had just been told about got
+# marked "[?] ... Treat those claims as unsupported", which reads as an accuracy
+# warning when the agent is simply asking which subject was meant.
+
+
+def test_naming_an_ambiguous_title_is_not_flagged_as_unsupported():
+    out = render(
+        "\"St. Mary's Church\" is shared by many churches. [[St. Mary's Church]] "
+        "Which one did you mean?",
+        [], {},
+        ambiguous_titles=["St. Mary's Church"],
+    )
+    assert UNKNOWN_MARKER not in out.text
+    assert "unsupported" not in out.text
+    assert out.unresolved == []
+
+
+def test_removing_the_marker_leaves_clean_prose():
+    out = render(
+        "It is ambiguous. [[St. Mary's Church]] Which one did you mean?",
+        [], {}, ambiguous_titles=["St. Mary's Church"],
+    )
+    assert "It is ambiguous. Which one did you mean?" in out.text
+    assert "  " not in out.text
+
+
+def test_a_marker_before_punctuation_does_not_leave_a_gap():
+    out = render(
+        "That name is ambiguous [[St. Mary's Church]].",
+        [], {}, ambiguous_titles=["St. Mary's Church"],
+    )
+    assert "ambiguous." in out.text
+    assert " ." not in out.text
+
+
+def test_ambiguity_matching_ignores_case_and_sections():
+    out = render(
+        "Ambiguous. [[st. mary's church#Notable]]",
+        [], {}, ambiguous_titles=["St. Mary's Church"],
+    )
+    assert out.unresolved == []
+
+
+def test_a_genuinely_fabricated_citation_is_still_flagged():
+    """Only titles the tools reported as ambiguous get the pass."""
+    out = render(
+        "A claim. [[Some Article I Never Read]]",
+        [], {}, ambiguous_titles=["St. Mary's Church"],
+    )
+    assert UNKNOWN_MARKER in out.text
+    assert out.unresolved == ["Some Article I Never Read"]
+
+
+def test_an_ambiguous_mention_alongside_real_sources():
+    """The ambiguity note disappears; the real citations stay."""
+    out = render(
+        "None in South America. [[St. Mary's Church]] The closest is in Stanley. "
+        "[[Stanley, Falkland Islands]]",
+        [prov("Stanley, Falkland Islands", 20, 7)], {20: Grade.C},
+        ambiguous_titles=["St. Mary's Church"],
+    )
+    assert UNKNOWN_MARKER not in out.text
+    assert "[1]" in out.text
+    assert "Stanley, Falkland Islands" in out.text
+    assert out.unresolved == []

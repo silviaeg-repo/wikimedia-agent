@@ -130,6 +130,7 @@ def render(
     grades: dict[int, Grade],
     *,
     registry: SourceRegistry | None = None,
+    ambiguous_titles: list[str] | None = None,
 ) -> RenderedAnswer:
     """Decorate citations and append this turn's source list.
 
@@ -143,6 +144,7 @@ def render(
     unrelated answer would attach sources to claims they do not support.
     """
     registry = registry or SourceRegistry()
+    ambiguous = {title.split("#", 1)[0].strip().casefold() for title in (ambiguous_titles or [])}
 
     # Numbers come from the session-wide registry; the listing does not.
     this_turn: dict[int, Citation] = {}
@@ -157,6 +159,13 @@ def render(
         title = match.group(1).strip()
         citation = registry.find(title)
         if citation is None:
+            if title.split("#", 1)[0].strip().casefold() in ambiguous:
+                # An ambiguous title the tools reported as a disambiguation
+                # page. Naming it is a statement about the *question*, not a
+                # claim about the world, so there is nothing to support and
+                # nothing to warn about -- the agent is asking which subject was
+                # meant (§2.4). Drop the marker and leave the prose to speak.
+                return ""
             # The model cited something it never retrieved: a fabricated
             # citation. Marked rather than silently dropped, so it is visible in
             # the answer and catchable by the eval scorers (§5).
@@ -168,7 +177,7 @@ def render(
         cited_numbers.add(citation.number)
         return citation.marker()
 
-    body = CITATION.sub(replace, answer_text).strip()
+    body = _tidy(CITATION.sub(replace, answer_text))
     citations = [
         Citation(
             number=entry.number,
@@ -193,6 +202,16 @@ def render(
         parts.extend(["", _unresolved_note(unresolved)])
 
     return RenderedAnswer(text="\n".join(parts), citations=citations, unresolved=unresolved)
+
+
+_LOOSE_SPACE = re.compile(r"[ \t]{2,}")
+_SPACE_BEFORE_PUNCT = re.compile(r"[ \t]+([.,;:!?)])")
+
+
+def _tidy(text: str) -> str:
+    """Close the gap left by a removed marker."""
+    text = _SPACE_BEFORE_PUNCT.sub(r"\1", _LOOSE_SPACE.sub(" ", text))
+    return "\n".join(line.rstrip() for line in text.split("\n")).strip()
 
 
 def _unresolved_note(titles: list[str]) -> str:
