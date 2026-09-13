@@ -99,14 +99,14 @@ wikimedia-agent
 ```
 
 ```
-? Who was Ben Franklin?
+> Who was Ben Franklin?
 Benjamin Franklin was an American polymath and Founding Father. [1]
 
 Sources
   [1] Benjamin Franklin — B-class
       https://en.wikipedia.org/wiki/Benjamin_Franklin
 
-? Where was he born?
+> Where was he born?
 He was born in Boston, Massachusetts. [1]
 ```
 

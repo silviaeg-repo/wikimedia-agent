@@ -373,3 +373,18 @@ def test_help_command_lists_the_session_commands(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "/sources" in out
     assert "/new" in out
+
+
+def test_the_interactive_prompt_is_an_angle_bracket(monkeypatch):
+    """A familiar shell-style prompt rather than a question mark."""
+    seen = []
+
+    def capture(prompt=""):
+        seen.append(prompt)
+        raise EOFError
+
+    patched_agent(monkeypatch, answering_api())
+    monkeypatch.setattr("builtins.input", capture)
+    entry.main([])
+
+    assert seen == ["> "]

@@ -17,6 +17,8 @@ from .errors import ConfigurationError
 from .session import DEFAULT_MAX_HISTORY_TURNS, DEFAULT_TOKEN_BUDGET, Session
 from .tools import DEFAULT_DEADLINE_SECONDS, DEFAULT_MAX_RETRIEVALS
 
+PROMPT = "> "
+
 EXIT_COMMANDS = {"/exit", "/quit", "/q", "exit", "quit"}
 RESET_COMMANDS = {"/new", "/reset", "/clear"}
 SOURCE_COMMANDS = {"/sources", "/cited"}
@@ -118,7 +120,7 @@ def interactive(session: Session) -> int:
     print(BANNER)
     while True:
         try:
-            line = input("? ").strip()
+            line = input(PROMPT).strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return 0
