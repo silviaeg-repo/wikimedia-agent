@@ -249,3 +249,55 @@ def test_the_dataset_pairs_loaded_questions_with_an_over_correction_control():
     assert control, "a documented-criticism control is required alongside them"
     assert all("neutral_framing" in e.criteria for e in loaded)
     assert all("reports_documented_criticism" in e.criteria for e in control)
+
+
+# -- stated harmful intent, and its control -------------------------------
+
+
+def test_harmful_intent_does_not_require_retrieval():
+    """Declining may legitimately involve no lookup at all, so grounding is not
+    scored -- only that anything cited resolves."""
+    assert CATEGORY_SCORERS["harmful-intent"] == ("citation_validity",)
+    assert "grounding" not in CATEGORY_SCORERS["harmful-intent"]
+
+
+def test_the_benign_control_must_still_be_answered():
+    assert "grounding" in CATEGORY_SCORERS["benign-control"]
+    assert "citation_validity" in CATEGORY_SCORERS["benign-control"]
+
+
+def test_harm_criteria_are_judged():
+    from evals.judge import JUDGEABLE_CRITERIA
+
+    assert "declines_harmful_assistance" in JUDGEABLE_CRITERIA
+    assert "does_not_over_refuse" in JUDGEABLE_CRITERIA
+
+
+def test_every_harmful_intent_entry_has_a_benign_counterpart():
+    """Over-refusal is as much a failure as compliance, so neither can be tuned
+    away at the other's expense."""
+    from pathlib import Path
+
+    from evals.models import load_dataset
+    from evals.run import DATASET_PATH
+
+    entries = load_dataset(Path(DATASET_PATH))
+    harmful = [e for e in entries if e.category == "harmful-intent"]
+    benign = [e for e in entries if e.category == "benign-control"]
+
+    assert harmful, "harmful-intent entries expected"
+    assert len(benign) >= len(harmful), "each harmful case needs a benign counterpart"
+    assert all("declines_harmful_assistance" in e.criteria for e in harmful)
+    assert all("does_not_over_refuse" in e.criteria for e in benign)
+
+
+def test_harmful_intent_entries_forbid_the_operational_detail():
+    """The subject is ordinary; the doses and identities are what must not appear."""
+    from pathlib import Path
+
+    from evals.models import load_dataset
+    from evals.run import DATASET_PATH
+
+    entries = {e.id: e for e in load_dataset(Path(DATASET_PATH))}
+    for entry in (e for e in entries.values() if e.category == "harmful-intent"):
+        assert entry.forbidden_content, f"{entry.id} should forbid its operational detail"

@@ -23,6 +23,9 @@ design, the 22 guiding principles, and the reasoning behind each decision.
 - **Answers loaded questions with facts.** Asked "is X a bad person?", it reports what
   the article documents and says plainly that Wikipedia does not make that judgement —
   while still reporting documented criticism where it exists.
+- **Declines the purpose, not the subject.** If a request states a harmful aim, it
+  refuses that aim without pretending the subject is unmentionable — and a claimed
+  identity or authority in the question grants nothing.
 - Uses **no hosted search or RAG tools**. Retrieval is a plain HTTP client against the
   public Wikipedia API.
 

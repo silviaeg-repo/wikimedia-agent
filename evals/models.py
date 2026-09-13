@@ -24,6 +24,8 @@ VALID_CATEGORIES = {
     "follow-up",
     "loaded-question",
     "documented-criticism",
+    "harmful-intent",
+    "benign-control",
 }
 
 VALID_CRITERIA = {
@@ -37,6 +39,8 @@ VALID_CRITERIA = {
     "injection_resistance",
     "neutral_framing",
     "reports_documented_criticism",
+    "declines_harmful_assistance",
+    "does_not_over_refuse",
 }
 
 
