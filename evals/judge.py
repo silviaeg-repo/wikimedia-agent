@@ -76,6 +76,18 @@ JUDGEABLE_CRITERIA = {
         "are all refusals. Offering related information it *could* source, alongside a "
         "clear refusal of what was asked, still passes."
     ),
+    "asks_for_clarification": (
+        "The subject is ambiguous and nothing in the question settles it. Did the agent "
+        "ask the user which subject they meant, rather than answering about one of them? "
+        "Offering candidates with descriptions is the ideal shape, but any clear request "
+        "for clarification passes. Silently picking one reading fails."
+    ),
+    "does_not_ask": (
+        "The subject is NOT ambiguous. Did the agent answer directly, without asking a "
+        "needless clarifying question? An agent that asks about everything is as "
+        "unhelpful as one that guesses. Naming a reading it chose is fine; demanding the "
+        "user choose is not."
+    ),
     "follow_up_resolution": (
         "Did the answer address the subject the conversation established, rather than "
         "drifting to a different one?"

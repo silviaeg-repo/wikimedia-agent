@@ -14,6 +14,8 @@ here:
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -52,6 +54,67 @@ UNTRUSTED_NOTICE = (
 
 MAX_SNIPPET_CHARS = 300
 
+DEFAULT_MAX_RETRIEVALS = 8
+"""Content fetches per question (principle #12).
+
+Enough for a two-hop question with a false start. Counts *successful content*
+only: an ambiguous title that produced a clarifying question is not a retrieval,
+because asking the user which subject they meant must not consume the budget for
+answering them (§2.4)."""
+
+DEFAULT_DEADLINE_SECONDS = 60.0
+"""Total retrieval wall-clock per question (§2.1), so that per-request timeouts
+and backoff cannot compound into an unbounded wait."""
+
+
+class BudgetExhausted(Exception):
+    """Internal signal: the question's retrieval budget is spent."""
+
+
+@dataclass
+class RetrievalBudget:
+    """Per-question ceilings on how much retrieval one answer may cost.
+
+    Both bounds are checked *before* a request goes out, so an exhausted budget
+    costs nothing further.
+    """
+
+    max_retrievals: int = DEFAULT_MAX_RETRIEVALS
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS
+    monotonic: Callable[[], float] = time.monotonic
+    used: int = 0
+    started_at: float | None = None
+
+    def start(self) -> None:
+        self.used = 0
+        self.started_at = self.monotonic()
+
+    @property
+    def elapsed(self) -> float:
+        if self.started_at is None:
+            return 0.0
+        return self.monotonic() - self.started_at
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.max_retrievals - self.used)
+
+    def check(self) -> None:
+        """Raise if this question has spent its budget."""
+        if self.used >= self.max_retrievals:
+            raise BudgetExhausted(
+                f"retrieval limit reached for this question "
+                f"({self.max_retrievals} article(s) read)"
+            )
+        if self.started_at is not None and self.elapsed > self.deadline_seconds:
+            raise BudgetExhausted(
+                f"retrieval time limit reached for this question "
+                f"({self.elapsed:.0f}s of {self.deadline_seconds:.0f}s)"
+            )
+
+    def spend(self) -> None:
+        self.used += 1
+
 
 def _envelope(kind: str, attributes: dict[str, object], body: str) -> str:
     """Fence retrieved content and tag it with metadata it cannot forge."""
@@ -87,8 +150,13 @@ class WikipediaTools:
     client: WikipediaClient
     retrievals: list[Provenance] = field(default_factory=list)
     calls: list[ToolCall] = field(default_factory=list)
+    budget: RetrievalBudget = field(default_factory=RetrievalBudget)
+    clarifications: list[str] = field(default_factory=list)
+    """Ambiguous titles that produced a clarifying question (§2.4). Recorded so
+    the eval harness can tell "asked the user" from "failed to retrieve"."""
 
     def _record(self, provenance: Provenance, grade: Grade) -> None:
+        self.budget.spend()
         self.grades[provenance.page_id] = grade
         for seen in self.retrievals:
             if seen.page_id == provenance.page_id and seen.section == provenance.section:
@@ -152,6 +220,10 @@ class WikipediaTools:
     def search(self, query: str, limit: int = DEFAULT_SEARCH_LIMIT) -> str:
         self.calls.append(ToolCall("search_wikipedia", {"query": query, "limit": limit}))
         try:
+            self.budget.check()
+        except BudgetExhausted as exc:
+            return _budget_result(exc)
+        try:
             results = self.client.search(query, limit=limit)
         except ValueError as exc:
             return f"INVALID REQUEST: {exc}"
@@ -178,6 +250,10 @@ class WikipediaTools:
     def summary(self, title: str) -> str:
         self.calls.append(ToolCall("get_summary", {"title": title}))
         try:
+            self.budget.check()
+        except BudgetExhausted as exc:
+            return _budget_result(exc)
+        try:
             result = self.client.get_summary(title)
         except WikipediaError as exc:
             return self._failure(exc)
@@ -202,6 +278,10 @@ class WikipediaTools:
 
     def article(self, title: str, section: str | None = None) -> str:
         self.calls.append(ToolCall("get_article", {"title": title, "section": section}))
+        try:
+            self.budget.check()
+        except BudgetExhausted as exc:
+            return _budget_result(exc)
         try:
             result = self.client.get_article(title, section=section)
         except WikipediaError as exc:
@@ -237,9 +317,11 @@ class WikipediaTools:
 
     # -- failures become next steps, not dead ends -------------------------
 
-    @staticmethod
-    def _failure(exc: WikipediaError) -> str:
+    def _failure(self, exc: WikipediaError) -> str:
         if isinstance(exc, DisambiguationError):
+            # Not a retrieval: asking which subject was meant must not consume
+            # the budget for answering it (§2.4).
+            self.clarifications.append(exc.title)
             return _disambiguation_result(exc)
         if isinstance(exc, PageNotFound):
             return (
@@ -250,6 +332,16 @@ class WikipediaTools:
             f"RETRIEVAL FAILED: {exc}. Do not answer from memory. Either try a "
             "different article or tell the user you could not retrieve the source."
         )
+
+
+def _budget_result(exc: BudgetExhausted) -> str:
+    """Tell the agent to finish with what it has, rather than stopping dead."""
+    return (
+        f"RETRIEVAL BUDGET REACHED: {exc}. Do not retrieve anything further. "
+        "Answer from what you have already read, citing it as usual, and say "
+        "plainly which parts of the question you could not cover. If you have "
+        "read nothing useful, say so rather than answering from memory."
+    )
 
 
 def _disambiguation_result(exc: DisambiguationError) -> str:

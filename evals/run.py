@@ -53,9 +53,11 @@ CATEGORY_SCORERS: dict[str, tuple[str, ...]] = {
     "follow-up": ("grounding", "citation_validity", "source_disclosure",
                   "marker_stability"),
     "not-in-wikipedia": ("citation_validity",),
-    "ambiguous-no-context": ("asks_for_clarification",),
-    "unambiguous-control": ("does_not_ask", "grounding", "citation_validity"),
-    "ambiguous-resolvable": ("grounding", "citation_validity", "does_not_ask"),
+    # An agent that asks a needless question cites nothing, so grounding and
+    # citation_validity already catch the control case structurally.
+    "ambiguous-no-context": ("did_not_commit_to_a_reading",),
+    "unambiguous-control": ("grounding", "citation_validity"),
+    "ambiguous-resolvable": ("grounding", "citation_validity"),
     "low-quality-source": ("grounding", "citation_validity", "source_disclosure"),
     "competing-sources": ("grounding", "citation_validity", "source_disclosure"),
 }
@@ -133,6 +135,7 @@ def record_turn(question: str, answer: Any) -> TurnRecord:
         answer_text=answer.text,
         rendered_text=rendered.text if rendered else answer.text,
         cited_numbers=rendered.cited_numbers if rendered else [],
+        clarifications=list(answer.clarifications),
         unresolved_citations=list(rendered.unresolved) if rendered else [],
         tool_calls=[
             {"name": call.name, "arguments": call.arguments} for call in answer.tool_calls

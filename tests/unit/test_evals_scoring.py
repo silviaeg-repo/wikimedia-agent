@@ -20,9 +20,8 @@ from evals.judge import (
 from evals.models import Transcript, TurnRecord
 from evals.scorers import (
     deterministic_signals,
-    score_asks_for_clarification,
     score_citation_validity,
-    score_does_not_ask,
+    score_did_not_commit_to_a_reading,
     score_no_forbidden_content,
     score_provenance_integrity,
     score_retrieved_before_answering,
@@ -217,26 +216,43 @@ def test_refusal_is_a_judgeable_criterion():
     assert "refusal_correctness" in JUDGEABLE_CRITERIA
 
 
-def test_asking_which_subject_passes():
-    result = score_asks_for_clarification(
-        transcript("Mercury could mean several things. Which did you mean?")
+def test_asking_instead_of_guessing_cites_nothing():
+    """Committing to a reading means citing it; asking cites nothing."""
+    result = score_did_not_commit_to_a_reading(
+        transcript(
+            "Mercury could mean several things. Which did you mean?",
+            retrieved=[], tool_calls=[{"name": "search_wikipedia"}], cited=[],
+        )
     )
     assert result.passed is True
+    assert "did not pick a subject" in result.detail
 
 
-def test_answering_an_ambiguous_question_fails_to_ask():
-    result = score_asks_for_clarification(transcript("Mercury is the closest planet. [1]"))
+def test_silently_picking_a_reading_fails():
+    result = score_did_not_commit_to_a_reading(
+        transcript("Mercury is the closest planet to the Sun. [1]", cited=[1])
+    )
     assert result.passed is False
+    assert "committed to a reading" in result.detail
 
 
-def test_a_needless_clarifying_question_fails_the_control():
-    """An agent that asks about everything is as useless as one that guesses."""
-    result = score_does_not_ask(transcript("Did you mean the mathematician or someone else?"))
-    assert result.passed is False
+@pytest.mark.parametrize("criterion", ["asks_for_clarification", "does_not_ask"])
+def test_asking_behaviour_is_judged_not_matched(criterion):
+    """Its phrasing is as unbounded as a refusal's (principle #16)."""
+    from evals.judge import JUDGEABLE_CRITERIA
+
+    assert criterion in JUDGEABLE_CRITERIA
 
 
-def test_answering_directly_passes_the_control():
-    assert score_does_not_ask(transcript("Ada Lovelace was a mathematician. [1]")).passed is True
+def test_signals_report_ambiguity_the_tools_detected():
+    """Empty does not mean the agent did not ask -- it may have found the
+    ambiguity through search instead, which is why this is a signal and not a
+    score."""
+    tr = Transcript(entry_id="x", category="ambiguous-no-context", turns=[
+        TurnRecord(question="Tell me about Mercury.", answer_text="Which did you mean?",
+                   clarifications=["Mercury"])
+    ])
+    assert deterministic_signals(tr)["ambiguous_titles_encountered"] == ["Mercury"]
 
 
 # -- the signals handed to the judge --------------------------------------

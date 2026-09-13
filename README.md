@@ -122,6 +122,11 @@ Nothing is shed silently. The agent says what it shortened or dropped, and an ar
 that leaves the conversation is still citable and cheap to re-read — the client cache
 serves it without another request.
 
+**Each question has a retrieval budget** — a ceiling on articles read and a wall-clock
+deadline, so a hard question cannot spend unbounded time or money. When it runs out, the
+agent is told to answer from what it has and say what it could not cover, rather than
+stopping dead. Asking you to disambiguate does not count against it.
+
 Output:
 
 ```

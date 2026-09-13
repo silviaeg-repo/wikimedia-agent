@@ -555,13 +555,21 @@ That is a question a user can answer in one word. A list of bare titles is not.
 
 A dedicated eval category (§5), scored programmatically wherever possible:
 
-| Case | Expected |
-|---|---|
-| Ambiguous, no context | Asks; does not answer; options carry descriptions |
-| Ambiguous, resolvable from the question | Answers, naming the reading chosen |
-| Ambiguous, resolvable from earlier turns | Answers about the established subject |
-| Clarification answered | Resolves and answers; does not re-ask |
-| Unambiguous | Does **not** ask — a clarifying question where none is needed is its own failure |
+| Case | Expected | How it is scored |
+|---|---|---|
+| Ambiguous, no context | Asks; does not answer | `did_not_commit_to_a_reading` (exact) + judged |
+| Ambiguous, resolvable from the question | Answers, naming the reading chosen | grounding + citations + judged |
+| Ambiguous, resolvable from earlier turns | Answers about the established subject | judged |
+| Clarification answered | Resolves and answers; does not re-ask | grounding + citations |
+| Unambiguous | Does **not** ask — a needless question is its own failure | grounding + citations (an agent that asks cites nothing) |
+
+*Revised in Phase 10.* Whether the agent asked was originally to be detected by
+phrase-matching. A real run showed why that fails for refusals (§5), and asking is
+equally unbounded in phrasing — so it is judged. What code checks instead is exact:
+committing to a reading means **citing** the article for it, so an answer that cites
+nothing has not guessed. The control case needs no special scorer at all: an agent that
+asks a needless question retrieves and cites nothing, which grounding and citation
+validity already catch (principle #16).
 
 That last row matters as much as the first: an agent that asks about everything is as
 useless as one that guesses.

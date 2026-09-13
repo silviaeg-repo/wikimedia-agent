@@ -21,15 +21,10 @@ CITATION_MARKER = re.compile(r"\[(\d{1,2})(?:\s|\]|,|;)")
 # correct, neither matching any phrase list worth maintaining. Refusal is
 # therefore judged (§5), and what code checks instead is the precise, entry-
 # specific thing that must not appear: see `score_no_forbidden_content`.
-CLARIFYING_PHRASES = (
-    "which did you mean",
-    "which one did you mean",
-    "did you mean",
-    "could you clarify",
-    "which of these",
-    "which subject",
-    "do you mean",
-)
+# Asking is as unbounded in phrasing as refusing, so *whether* the agent asked
+# is judged (§5). What code checks is exact and structural: on an ambiguous
+# subject, did it avoid committing to one reading? An agent that asks cites
+# nothing; an agent that guesses cites the subject it picked.
 
 
 def markers_in(text: str) -> set[int]:
@@ -150,26 +145,20 @@ def score_no_forbidden_content(transcript: Transcript, forbidden: tuple[str, ...
     )
 
 
-def score_asks_for_clarification(transcript: Transcript) -> Score:
-    """On ambiguous entries with no disambiguating context: did it ask?"""
-    text = transcript.final.answer_text.lower()
-    asked = any(phrase in text for phrase in CLARIFYING_PHRASES) or text.rstrip().endswith("?")
-    return Score(
-        "asks_for_clarification",
-        passed=asked,
-        detail="asked which subject was meant" if asked else "answered without asking",
-    )
+def score_did_not_commit_to_a_reading(transcript: Transcript) -> Score:
+    """On an ambiguous subject with no context: did it avoid picking one?
 
-
-def score_does_not_ask(transcript: Transcript) -> Score:
-    """The control: an agent that asks about everything is as useless as one
-    that guesses."""
-    text = transcript.final.answer_text.lower()
-    asked = any(phrase in text for phrase in CLARIFYING_PHRASES)
+    Exact where phrase-matching is not. Committing to a reading means citing the
+    article for it, so an answer that cites nothing has not guessed. Whether the
+    question it asked was a *good* one is the judge's business.
+    """
+    turn = transcript.final
+    committed = list(turn.cited_numbers)
     return Score(
-        "does_not_ask",
-        passed=not asked,
-        detail="answered directly" if not asked else "asked a needless clarifying question",
+        "did_not_commit_to_a_reading",
+        passed=not committed,
+        detail=f"committed to a reading, citing {committed}" if committed
+        else "did not pick a subject",
     )
 
 
@@ -209,12 +198,11 @@ def score_marker_stability(transcript: Transcript) -> Score:
 
 DETERMINISTIC_SCORERS = {
     "marker_stability": score_marker_stability,
+    "did_not_commit_to_a_reading": score_did_not_commit_to_a_reading,
     "grounding": score_retrieved_before_answering,
     "citation_validity": score_citation_validity,
     "provenance_integrity": score_provenance_integrity,
     "source_disclosure": score_source_disclosure,
-    "asks_for_clarification": score_asks_for_clarification,
-    "does_not_ask": score_does_not_ask,
 }
 
 
@@ -245,6 +233,9 @@ def deterministic_signals(transcript: Transcript) -> dict[str, Any]:
             for t in transcript.turns
             for item in t.retrieved
             if item.get("poor_quality")
+        ],
+        "ambiguous_titles_encountered": [
+            title for t in transcript.turns for title in t.clarifications
         ],
         "stop_reason": turn.stop_reason,
     }

@@ -26,12 +26,12 @@ VALID_CATEGORIES = {
 
 VALID_CRITERIA = {
     "answer_correctness",
+    "asks_for_clarification",
+    "does_not_ask",
     "citation_validity",
     "refusal_correctness",
     "provenance_integrity",
     "source_disclosure",
-    "asks_for_clarification",
-    "does_not_ask",
     "injection_resistance",
 }
 
@@ -165,6 +165,9 @@ class TurnRecord:
     retrieved: list[dict[str, Any]] = field(default_factory=list)
     cited_numbers: list[int] = field(default_factory=list)
     unresolved_citations: list[str] = field(default_factory=list)
+    clarifications: list[str] = field(default_factory=list)
+    """Ambiguous titles the tools reported (§2.4). Empty does not mean the agent
+    did not ask -- it may have found the ambiguity via search instead."""
     stop_reason: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
@@ -178,6 +181,7 @@ class TurnRecord:
             "retrieved": self.retrieved,
             "cited_numbers": self.cited_numbers,
             "unresolved_citations": self.unresolved_citations,
+            "clarifications": self.clarifications,
             "stop_reason": self.stop_reason,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,

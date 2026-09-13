@@ -26,9 +26,13 @@ DEFAULT_MODEL = "claude-opus-5"
 separately (§2.2) -- this is the agent's, and nothing defaults to it."""
 
 DEFAULT_MAX_TOKENS = 16_000
-DEFAULT_MAX_ITERATIONS = 8
-"""Retrieval-call ceiling per question (principle #12). Enough for a two-hop
-question with a false start; few enough that a runaway loop stops."""
+DEFAULT_MAX_ITERATIONS = 12
+"""Ceiling on agent-loop turns per question.
+
+Distinct from the retrieval budget in :mod:`wikimedia_agent.tools`, which counts
+articles actually read. This one stops a loop that spins without retrieving --
+repeated failed lookups, say -- and sits above the retrieval budget so that the
+budget's own "answer with what you have" message gets a turn to be acted on."""
 
 
 @dataclass
@@ -40,9 +44,20 @@ class Answer:
     grades: dict[int, Grade]
     stop_reason: str | None
     tool_calls: list[ToolCall] = field(default_factory=list)
+    clarifications: list[str] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
     rendered: RenderedAnswer | None = None
+
+    @property
+    def asked_for_clarification(self) -> bool:
+        """Whether an ambiguous title produced a clarifying question (§2.4).
+
+        A structural fact, unlike the wording of the question itself -- which is
+        why the eval harness reads this rather than matching phrases
+        (principle #16).
+        """
+        return bool(self.clarifications)
 
     @property
     def display_text(self) -> str:
@@ -108,6 +123,10 @@ class WikipediaAgent:
         self.tools.retrievals.clear()
         self.tools.grades.clear()
         self.tools.calls.clear()
+        self.tools.clarifications.clear()
+        # Bounds are per question, not per session: a long conversation must not
+        # starve its later turns of retrieval (§2.1, principle #12).
+        self.tools.budget.start()
 
         messages: list[BetaMessageParam] = [
             *(history or []),
@@ -144,6 +163,7 @@ class WikipediaAgent:
             grades=dict(self.tools.grades),
             stop_reason=stop_reason,
             tool_calls=list(self.tools.calls),
+            clarifications=list(self.tools.clarifications),
             input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
             output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
         )
