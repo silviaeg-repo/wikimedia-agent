@@ -652,7 +652,14 @@ wins and the scope shrinks.
 18. **All retrieval is ours.** No hosted search, no server-side fetch tool, no managed
     RAG. The agent's only route to the world is the Wikipedia client in §2.1 — which is
     also what makes every answer auditable.
-19. **Don't build for hypotheticals.** The provider is fixed by C1, so we depend on the
+19. **The judge is a fixed instrument, not a prompt.** One versioned judge — same model,
+    prompt, rubric and settings — applied systematically across every category, receiving
+    the context, the full interaction trace, and the deterministic signals code already
+    established (whether the agent searched or answered from context, whether references
+    resolved, whether poor sources were flagged). It rules only on what needs judgement;
+    everything checkable is checked in code. Scores from different judge versions are
+    never compared — re-judge the stored transcripts instead (§5).
+20. **Don't build for hypotheticals.** The provider is fixed by C1, so we depend on the
     Anthropic SDK directly rather than wrapping it in a port for a second provider that
     the assignment forbids. Abstractions earn their place by solving a problem we
     actually have — the §2.1 Wikipedia boundary does; a model-provider port did not.
@@ -681,8 +688,11 @@ wikimedia-agent/
 │   ├── fixtures/          # recorded Anthropic responses for offline loop tests
 │   └── integration/       # real API, recorded fixtures
 └── evals/
-    ├── dataset.jsonl      # graded question set
-    └── run_eval.py
+    ├── dataset.jsonl      # graded question set + short conversations
+    ├── calibration.jsonl  # hand-graded entries; gates judge changes
+    ├── judge.py           # versioned judge: prompt, rubric, structured output
+    ├── scorers.py         # deterministic scorers (free, re-runnable)
+    └── run_eval.py        # scoped runner + cost reporting
 ```
 
 ---
@@ -824,8 +834,9 @@ API, answered with a real citation. Explicitly invoked, not part of `pytest`.
 ---
 
 ### Phase 6 — Eval harness
-**Deliverable:** `evals/` — dataset format, scoped runner, deterministic scorers, cost
-reporting. Seeded with the single-hop and citation-validity cases.
+**Deliverable:** `evals/` — dataset format, scoped runner, deterministic scorers, the
+versioned judge (§5), and cost reporting. Seeded with the single-hop and
+citation-validity cases.
 
 **Unit tests:**
 - Dataset entries parse; malformed entries fail loudly.
@@ -834,13 +845,20 @@ reporting. Seeded with the single-hop and citation-validity cases.
 - `--category` and `--limit` select the right subset; `--all` selects everything.
 - Cost estimation is printed before the run and actual cost after.
 - The Layer 3 marker excludes evals from the default `pytest` run.
+- The judge package is assembled correctly: context, full trace, reference answer,
+  deterministic signals, and the enabled criteria for that entry.
+- `judge_version` is stamped on every report, and the runner refuses to compare reports
+  written under different judge versions.
+- Judge output parses into per-criterion verdicts; a malformed response fails loudly
+  rather than scoring zero.
+- The calibration set re-runs and is asserted against its hand-graded labels.
 
 **Evals (paid, scoped):**
 1. **Single-hop factual**, ~5 questions — the first real score.
 2. **Citation validity** on the same run — free to re-score afterwards.
 
 **Done when:** `python -m evals.run --category single-hop --limit 5` produces a scored
-report with a dollar figure, and is absent from `pytest`.
+report carrying a dollar figure and a `judge_version`, and is absent from `pytest`.
 
 ---
 
@@ -1041,8 +1059,8 @@ short conversations scored turn by turn — across these categories:
 | **Long conversation** | Eviction + marker stability | 10+ turns past the token budget |
 
 **Grading.** Three scores per question:
-1. **Answer correctness** — LLM-as-judge against the reference answer, with a
-   sample hand-checked to confirm the judge is calibrated.
+1. **Answer correctness** — LLM-as-judge against the reference answer, under the fixed
+   judge contract below.
 2. **Citation validity** — programmatic, not judged (principle #14): every cited article
    must exist, and the cited text must actually appear in the fetched content. Free,
    deterministic, and it catches fabricated citations — the failure mode that matters
@@ -1072,6 +1090,62 @@ short conversations scored turn by turn — across these categories:
 Only scores 1 and 6 need a paid judge call. The other six are deterministic and run
 against a stored transcript for free (principle #14) — so re-scoring citations, provenance, and
 injection resistance after a change costs nothing.
+
+#### The judge
+
+A judge that grades differently on Tuesday than it did on Monday makes every comparison
+meaningless — a score change would tell us nothing about whether the agent improved. So
+the judge is a **fixed, versioned component**, not a prompt written per eval.
+
+**One judge, one rubric, applied systematically.** A single prompt and rubric covers every
+category. Category-specific criteria are *enabled or disabled per entry*, never rewritten
+— so "was the refusal correct?" is the same question in the same words wherever it is
+asked. The judge model, prompt, rubric, and settings are pinned together as a
+`judge_version` recorded in **every** report. Changing any of them bumps the version, and
+**scores from different judge versions are never compared** — a re-judge of the stored
+transcripts is the only valid way to move a baseline forward. Re-judging is cheap because
+transcripts are stored.
+
+**What the judge receives**, as one structured package per entry:
+
+| Input | Why |
+|---|---|
+| **Context** — the question, or the full conversation up to this turn | A follow-up cannot be graded without what came before |
+| **The interaction transcript** — every turn, tool call, tool result, and the rendered answer | What the agent *did*, not just what it said |
+| **The reference answer** and expected source article(s) | The target |
+| **Deterministic signals** — the facts code already established | See below |
+| **Which criteria apply** to this entry | Systematic application, not ad-hoc judgement |
+
+**Deterministic signals are given to the judge as established facts, never re-derived by
+it** (principle #14). Code already knows these, and asking a model to re-determine them
+adds cost and variance for nothing:
+
+- Did the agent **search Wikipedia or answer from context**? (tool calls in the trace)
+- Were **references provided**, and do they resolve to articles actually retrieved?
+- Is every citation's text **present in the recorded revision**?
+- Were **poor-quality sources flagged** inline and in the source list?
+- Was **every retrieved article disclosed**?
+- Retrieval count, turn index, tokens, latency, cost.
+
+This split is the point: **the judge rules only on what needs judgement** — is the answer
+factually right, did the follow-up resolve to the right subject, was weak sourcing
+acknowledged in the prose where it mattered. Everything checkable is checked in code and
+handed over as input. It keeps the judge's job narrow, which is what makes it consistent.
+
+**Output is structured, not prose.** Per criterion: a verdict, a confidence, and a
+one-line reason. A single blended score hides which criterion moved and makes regressions
+untraceable.
+
+**Consistency measures:**
+- Fixed criterion order; the judge never sees other entries' scores, so it cannot drift
+  or anchor within a run.
+- Deterministic settings (pinned model, low effort, no sampling variation).
+- **A calibration set** of hand-graded entries re-run on every judge change — if the judge
+  disagrees with the human labels, the judge changed, not the agent.
+- **Self-preference is a known risk**, since the judge and the agent are the same model
+  family. Mitigated by keeping the judge's scope narrow (above), by the calibration set,
+  and by the fact that the scores which gate release — citations, provenance, disclosure,
+  injection — are deterministic and not the judge's to give.
 
 **Also recorded per run:** tokens and dollar cost per question, wall-clock latency,
 and number of retrieval calls. These are the numbers that justify any later change
@@ -1121,6 +1195,8 @@ follow-up resolution**, and **100% marker stability** — also renderer-enforced
 | Context exhaustion mid-conversation | Registry metadata is tiny and always kept; article bodies evict against a configured budget and re-fetch from cache; the agent says when it has evicted rather than forgetting silently (§2.4) |
 | Injected content from an early turn influencing a later one | Multi-turn case in the injection eval category; the §2.3 defences are turn-independent |
 | Paid model calls fire accidentally during development | Layer 3 is marker-excluded from the default `pytest` run, kept out of watch modes and pre-commit hooks, and needs an explicit command that names a scope (principle #14) |
+| Judge drift makes scores incomparable across runs | Judge model, prompt, rubric and settings are pinned as a `judge_version` stamped on every report; the runner refuses cross-version comparisons, and a hand-graded calibration set gates every judge change (§5) |
+| Judge self-preference — it grades the same model family it is judging | The judge's scope is narrow (deterministic facts are computed in code and handed to it), the release-gating scores are not the judge's to give, and the calibration set catches divergence from human labels |
 | Per-question cost drifting upward | Cost recorded per eval run; prompt caching on the stable system prompt + tool definitions |
 | Multi-hop loops running away | Cap retrieval calls per question; consider a task budget on the agent loop |
 
