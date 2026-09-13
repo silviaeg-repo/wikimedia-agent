@@ -37,24 +37,29 @@ ingestion pipeline, no index staleness. The cost is per-question latency. We mit
 it with caching and with batching several titles into one request — *not* with
 concurrency, which the API etiquette rules out (§2.1).
 
-**Stack:** Python 3.11+, the official `anthropic` SDK, `httpx` for the Wikipedia
-calls, `pytest` for tests.
+**Stack:** Python 3.11+, `httpx` for the Wikipedia calls, `pytest` for tests. Vendor
+SDKs (`anthropic`, `openai`) are optional extras, imported only inside `llm/` (§2.2) —
+installing one provider must not require the other.
 
-**Model:** `claude-opus-5` with adaptive thinking. Multi-hop retrieval decisions are
-exactly the kind of thing thinking helps with. Reference cost: $5 / $25 per million
-input / output tokens. We will measure real per-question cost during the eval phase
-(§5) and only then decide whether a cheaper model or a lower `effort` setting holds
-quality — that's a measured decision, not an upfront one.
+**Model:** reached only through the provider-agnostic port in §2.2, so the model is a
+config value rather than a code dependency. The default and reference implementation is
+`claude-opus-5` with adaptive thinking — multi-hop retrieval decisions are exactly what
+thinking helps with. Reference cost: $5 / $25 per million input / output tokens. We will
+measure real per-question cost during the eval phase (§5) and only then decide whether a
+cheaper model or a lower effort setting holds quality — a measured decision, not an
+upfront one.
 
-**Agent loop:** the Anthropic SDK's tool runner (`client.beta.messages.tool_runner`)
-drives the request → tool-execute → loop cycle. We supply tool functions; the SDK
-supplies the loop. If we later need approval gates or custom retry behaviour, the
-runner's per-turn hooks cover it without hand-writing the loop.
+**Agent loop:** we own the request → tool-execute → loop cycle ourselves, in
+`agent.py`, written against the provider-agnostic port in §2.2. An earlier draft
+delegated this to the Anthropic SDK's `tool_runner`; that helper is Anthropic-specific,
+so keeping the model swappable means writing the loop ourselves. It is roughly thirty
+lines — a `while` over `stop_reason == "tool_use"` — and it stays identical across
+providers.
 
 ```
 question
    ↓
-agent loop (Claude + tools)
+agent loop (LLMClient + tools)
    ├── search_wikipedia(query)      → candidate article titles + snippets
    ├── get_article(title, section?) → article text, section-scoped
    └── get_summary(title)           → short lead extract, cheap disambiguation
@@ -163,7 +168,110 @@ API load, and makes eval runs reproducible and cheap.
 
 ---
 
-## 2.2 Guiding principles
+## 2.2 The model provider boundary
+
+Same principle as §2.1, applied to the model: all LLM access sits behind one narrow
+interface in `llm/`, so switching between Anthropic, OpenAI, or a local model is a
+config change, not a rewrite. `agent.py` imports the port, never a vendor SDK.
+
+### The port
+
+One method. Everything else is data:
+
+```python
+class LLMClient(Protocol):
+    def complete(
+        self,
+        *,
+        system: str,
+        messages: list[Message],
+        tools: list[ToolSpec],
+    ) -> AssistantTurn: ...
+
+    @property
+    def capabilities(self) -> Capabilities: ...
+```
+
+With provider-neutral types we own:
+
+| Type | Carries |
+|---|---|
+| `Message` | `role` + ordered content blocks (`TextBlock`, `ToolCall`, `ToolResult`) |
+| `ToolSpec` | name, description, JSON-Schema parameters |
+| `ToolCall` | `id`, `name`, parsed `arguments` dict |
+| `AssistantTurn` | text, `tool_calls`, `stop_reason`, `Usage` |
+| `Usage` | input / output tokens, and **cost in dollars**, computed per-provider |
+| `Capabilities` | feature flags — see below |
+
+`stop_reason` normalizes to a closed set: `end_turn`, `tool_use`, `max_tokens`,
+`refusal`. Adapters map their vendor's vocabulary onto it, so the loop branches on our
+enum and never on a vendor string.
+
+### Adapters
+
+`llm/anthropic.py`, `llm/openai.py`, and `llm/fake.py`. Each one is responsible for all
+translation in both directions, and vendor types never cross the boundary:
+
+- **Anthropic** — `content` blocks ↔ our blocks; `tool_use` / `tool_result` blocks;
+  `tools[].input_schema`. Sets adaptive thinking and prompt caching where configured.
+- **OpenAI** — `tool_calls` with **JSON-string** `arguments` (ours are parsed dicts, so
+  the adapter parses on the way in and serializes on the way out); tool results as
+  separate `role: "tool"` messages rather than content blocks; `finish_reason` mapped to
+  our `stop_reason`.
+- **Fake** — a scripted client returning canned turns. This is what makes the agent loop
+  testable with no network and no spend (§5, Layer 1).
+
+Each adapter owns its own retry, timeout, and typed-error handling, mapping vendor
+exceptions to an `LLMError` hierarchy — the same discipline as §2.1.
+
+### Capabilities, not lowest-common-denominator
+
+The real risk in a multi-provider abstraction is flattening everything to what all
+providers share, giving up the good parts of each. So the port does not pretend
+providers are identical — it **declares differences and lets callers adapt**:
+
+```python
+@dataclass(frozen=True)
+class Capabilities:
+    extended_thinking: bool
+    prompt_caching: bool
+    parallel_tool_calls: bool
+    max_context_tokens: int
+```
+
+Provider-specific tuning (Anthropic's adaptive thinking and effort, prompt-cache
+breakpoints, OpenAI's equivalents) lives in **adapter-level config**, not in the port's
+signature. An adapter applies what its provider supports and ignores the rest. The agent
+reads `capabilities` when behaviour genuinely must differ — e.g. sizing retrieval to
+`max_context_tokens` — and otherwise stays oblivious.
+
+### What this costs
+
+Worth stating plainly, since it is a real trade:
+
+- **We write and maintain the agent loop ourselves**, rather than using
+  `client.beta.messages.tool_runner`. Small and stable, but ours.
+- **Provider-specific features need adapter plumbing** to reach the agent. Anything not
+  in `Capabilities` is invisible above the boundary.
+- **Every adapter needs its own conformance testing**, or "swappable" is a claim rather
+  than a fact — hence the shared suite below.
+
+The benefit that justifies it: model choice becomes a measured decision (§5) instead of
+an architectural commitment, and the agent loop becomes testable with zero spend.
+
+### Validating the abstraction
+
+- **A shared conformance suite** runs against every adapter: same tool-call round-trip,
+  same error mapping, same `stop_reason` normalization. An adapter is "done" when it
+  passes, not when it returns a string.
+- **Cross-provider evals.** The §5 harness takes the provider as a parameter, so the
+  same graded question set scores Claude and GPT side by side, with cost and latency per
+  question. This is the point of the abstraction: a model decision backed by our own
+  numbers on our own task.
+
+---
+
+## 2.3 Guiding principles
 
 Applies to every phase in §4. Where a principle and a deadline conflict, the principle
 wins and the scope shrinks.
@@ -174,9 +282,9 @@ wins and the scope shrinks.
 2. **A fabricated citation is the worst failure.** It is worse than a wrong answer,
    because it looks trustworthy. Hence citations are verified programmatically and held
    to a stricter bar than correctness.
-3. **One boundary per concern.** HTTP lives in `wikipedia.py`, prompts in `agent.py`,
-   schemas in `tools.py`. A change of API shape must not reach the agent, and a change
-   of prompt must not reach the client.
+3. **One boundary per concern.** HTTP lives in `wikipedia.py`, model calls in `llm/`,
+   prompts in `agent.py`, schemas in `tools.py`. A change of API shape must not reach
+   the agent, and a change of prompt must not reach the client.
 4. **Be a good API citizen.** Wikipedia is donated infrastructure. Serial requests,
    honest UA, batching over hammering. When guidance and convenience conflict, follow
    the guidance — and when this plan contradicts upstream guidance, upstream wins and
@@ -195,6 +303,11 @@ wins and the scope shrinks.
 10. **Tool arguments are untrusted.** The model chooses them and retrieved content can
     influence that choice. The client validates and clamps every argument; limits are
     enforced server-side of the boundary, never by prompt instruction alone.
+11. **No vendor SDK above the port.** `import anthropic` and `import openai` appear only
+    inside `llm/`, enforced by a lint rule in CI — not by good intentions. The model is a
+    config value, so provider choice stays a measured decision (§5) rather than an
+    architectural commitment. Where providers genuinely differ, declare it in
+    `Capabilities` rather than flattening to the lowest common denominator.
 
 ---
 
@@ -206,13 +319,19 @@ wikimedia-agent/
 ├── README.md
 ├── pyproject.toml
 ├── src/wikimedia_agent/
-│   ├── agent.py           # agent loop, system prompt, tool wiring
-│   ├── tools.py           # @beta_tool definitions
-│   ├── wikipedia.py       # API client: UA, retries, cache
+│   ├── agent.py           # provider-agnostic agent loop, system prompt, tool wiring
+│   ├── tools.py           # tool specs + handlers (no vendor types)
+│   ├── llm/               # the §2.2 model boundary
+│   │   ├── port.py        #   Protocol + Message/ToolSpec/AssistantTurn/Capabilities
+│   │   ├── anthropic.py   #   adapter (default)
+│   │   ├── openai.py      #   adapter
+│   │   └── fake.py        #   scripted adapter for tests
+│   ├── wikipedia.py       # the §2.1 API client: UA, throttle, timeouts, typed errors
 │   ├── citations.py       # citation extraction + formatting
 │   └── cli.py             # entry point
 ├── tests/
 │   ├── unit/              # mocked API, no network, no model calls
+│   ├── conformance/       # one suite, run against every LLM adapter
 │   └── integration/       # real API, recorded fixtures
 └── evals/
     ├── dataset.jsonl      # graded question set
@@ -223,18 +342,21 @@ wikimedia-agent/
 
 ## 4. Build phases
 
-Each phase ends with a commit pushed to `main`. Phases 1–3 are independently testable
-without spending a cent on model calls.
+Each phase ends with a commit pushed to `main`. Phases 1–4 are independently testable
+without spending a cent on model calls — the fake adapter (§2.2) means even the agent
+loop is exercised for free.
 
 | # | Phase | Deliverable | Done when |
 |---|---|---|---|
 | 0 | Plan & scaffold | This document, `pyproject.toml`, CI skeleton | Plan committed; `pytest` runs green on an empty suite |
 | 1 | Wikipedia client | `wikipedia.py` — the §2.1 boundary: UA, serial throttle, bounded limits, timeouts, typed errors, caching | Unit tests pass against mocked responses; integration tests pass against the live API; no HTTP type escapes the module |
 | 2 | Tool layer | `tools.py` — the three tools with typed schemas, calling the client only | Each tool callable standalone; `PageNotFound` / `DisambiguationError` / timeouts map to useful tool results |
-| 3 | Agent loop | `agent.py` + system prompt + citation formatting | Answers a single-hop question end to end with a correct citation |
-| 4 | Multi-hop & robustness | Iterative retrieval, retrieval-failure paths, token budget | Answers a two-hop question; refuses cleanly when Wikipedia lacks the answer |
-| 5 | Evaluation harness | `evals/` — dataset and runner (§5) | Full suite runs, emits a scored report, per-question cost recorded |
-| 6 | CLI & docs | `cli.py`, README with setup and examples | A new user can install and ask a question from the README alone |
+| 3 | Model boundary | `llm/` — port, Anthropic adapter, fake adapter | Conformance suite passes for both; no vendor import outside `llm/` |
+| 4 | Agent loop | `agent.py` + system prompt + citation formatting | Answers a single-hop question end to end with a correct citation, driven by the fake adapter in tests |
+| 5 | Multi-hop & robustness | Iterative retrieval, retrieval-failure paths, token budget | Answers a two-hop question; refuses cleanly when Wikipedia lacks the answer |
+| 6 | Evaluation harness | `evals/` — dataset and runner (§5) | Full suite runs, emits a scored report, per-question cost recorded |
+| 7 | CLI & docs | `cli.py`, README with setup and examples | A new user can install and ask a question from the README alone |
+| 8 | Second provider | `llm/openai.py` | Passes the same conformance suite; cross-provider eval numbers reported (§5) |
 
 ---
 
@@ -254,6 +376,13 @@ Run on every commit, fast.
 - Tool functions against recorded fixtures: normal article, disambiguation page,
   missing title, redirect, very long article.
 - Citation formatting and parsing.
+
+### Layer 1.5 — Adapter conformance (no network, no model)
+One suite, parameterized over every adapter, so "swappable" is a tested fact rather than
+a claim. Each adapter must demonstrate: a tool-call round-trip survives translation in
+both directions; `stop_reason` normalizes to our closed set; vendor errors map to the
+`LLMError` hierarchy; `Usage` reports tokens and dollar cost; and no vendor type escapes
+the boundary. Runs against recorded vendor payloads — free, offline, every commit.
 
 ### Layer 2 — Integration tests (real API, no model)
 Run on demand and nightly — these can break when Wikipedia changes, and that's the
@@ -288,6 +417,12 @@ across five categories:
 and number of retrieval calls. These are the numbers that justify any later change
 to model or effort level.
 
+**Cross-provider runs.** The harness takes the provider as a parameter, so the same
+graded set scores each configured model side by side on correctness, citation validity,
+cost, and latency. This is the payoff of §2.2: the model decision comes from our numbers
+on our task, and re-running it after any provider releases a new model is one flag, not
+a migration.
+
 **Data split.** The set is split train / validation / test. Prompt iteration happens
 against train and validation; the test slice is scored but never tuned against, so
 the headline number stays honest.
@@ -311,6 +446,8 @@ the headline number stays honest.
 | Wikimedia IP-blocks us for non-compliant access | Mandatory descriptive UA that startup enforces, strictly serial requests, batching, backoff, caching (§2.1) |
 | Long articles exhausting the context window | Section-scoped fetching; summary-first disambiguation |
 | Wikipedia content itself being wrong or vandalised | Out of our control — we ground and cite, so the user can check the source. Document this limitation in the README |
+| The abstraction leaks — an adapter quietly behaves differently | Shared conformance suite (§5, Layer 1.5) plus a CI lint rule banning vendor imports above `llm/` |
+| The abstraction flattens away what makes a provider good | Provider-specific tuning lives in adapter config, and real differences are declared in `Capabilities` rather than hidden |
 | Per-question cost drifting upward | Cost recorded per eval run; prompt caching on the stable system prompt + tool definitions |
 | Multi-hop loops running away | Cap retrieval calls per question; consider a task budget on the agent loop |
 
