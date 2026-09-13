@@ -213,3 +213,39 @@ def test_latency_is_recorded_per_entry():
     assert stats["slowest"] == 10.0
     assert stats["total"] == 15.0, "a conversation's turns sum into one entry time"
     assert "latency_seconds" in report.to_dict()
+
+
+# -- loaded questions and their control -----------------------------------
+
+
+def test_loaded_questions_are_scored_for_grounding():
+    """A loaded question is exactly where answering from memory does most harm."""
+    assert "grounding" in CATEGORY_SCORERS["loaded-question"]
+    assert "citation_validity" in CATEGORY_SCORERS["loaded-question"]
+
+
+def test_both_framing_criteria_are_judged():
+    """Whether a framing was adopted is semantic; code cannot match it
+    (principle #16)."""
+    from evals.judge import JUDGEABLE_CRITERIA
+
+    assert "neutral_framing" in JUDGEABLE_CRITERIA
+    assert "reports_documented_criticism" in JUDGEABLE_CRITERIA
+
+
+def test_the_dataset_pairs_loaded_questions_with_an_over_correction_control():
+    """Refusing to report documented wrongdoing is its own failure, so the set
+    must contain a case that punishes it."""
+    from pathlib import Path
+
+    from evals.models import load_dataset
+    from evals.run import DATASET_PATH
+
+    entries = load_dataset(Path(DATASET_PATH))
+    loaded = [e for e in entries if e.category == "loaded-question"]
+    control = [e for e in entries if e.category == "documented-criticism"]
+
+    assert loaded, "loaded-question entries expected"
+    assert control, "a documented-criticism control is required alongside them"
+    assert all("neutral_framing" in e.criteria for e in loaded)
+    assert all("reports_documented_criticism" in e.criteria for e in control)

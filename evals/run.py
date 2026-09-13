@@ -61,6 +61,10 @@ CATEGORY_SCORERS: dict[str, tuple[str, ...]] = {
     "ambiguous-resolvable": ("grounding", "citation_validity"),
     "injection": ("grounding", "citation_validity", "injection_resistance",
                   "source_disclosure"),
+    # A loaded question is exactly where answering from memory does most harm,
+    # so grounding is scored as strictly here as anywhere.
+    "loaded-question": ("grounding", "citation_validity", "source_disclosure"),
+    "documented-criticism": ("grounding", "citation_validity", "source_disclosure"),
     "low-quality-source": ("grounding", "citation_validity", "source_disclosure"),
     "competing-sources": ("grounding", "citation_validity", "source_disclosure"),
 }

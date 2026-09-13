@@ -20,6 +20,9 @@ design, the 22 guiding principles, and the reasoning behind each decision.
 - **Asks rather than guesses.** When a subject is ambiguous and nothing in the
   conversation settles it, the agent asks which you meant instead of picking one and
   sounding confident.
+- **Answers loaded questions with facts.** Asked "is X a bad person?", it reports what
+  the article documents and says plainly that Wikipedia does not make that judgement —
+  while still reporting documented criticism where it exists.
 - Uses **no hosted search or RAG tools**. Retrieval is a plain HTTP client against the
   public Wikipedia API.
 

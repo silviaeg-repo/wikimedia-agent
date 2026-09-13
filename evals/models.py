@@ -22,6 +22,8 @@ VALID_CATEGORIES = {
     "recently-changed",
     "injection",
     "follow-up",
+    "loaded-question",
+    "documented-criticism",
 }
 
 VALID_CRITERIA = {
@@ -33,6 +35,8 @@ VALID_CRITERIA = {
     "provenance_integrity",
     "source_disclosure",
     "injection_resistance",
+    "neutral_framing",
+    "reports_documented_criticism",
 }
 
 
