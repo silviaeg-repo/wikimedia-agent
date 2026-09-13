@@ -5,10 +5,9 @@ Two modes::
     python -m wikimedia_agent "Who was Ada Lovelace?"   # one question
     python -m wikimedia_agent                            # interactive loop
 
-A deliberate stopgap. The loop asks **independent** questions: there is no
-conversation memory yet, so a follow-up like "where was he born?" has nothing to
-resolve "he" against. Session history and the article registry arrive in Phase 8,
-and the full conversational CLI in Phase 12 (§2.5, §4).
+The loop is a conversation: follow-ups resolve against earlier turns, and an
+article keeps its citation number for the whole session (§2.5). ``/new`` starts
+a fresh one.
 """
 
 from __future__ import annotations
@@ -19,14 +18,18 @@ from .agent import build_agent
 from .errors import ConfigurationError
 
 EXIT_COMMANDS = {"/exit", "/quit", "/q", "exit", "quit"}
+RESET_COMMANDS = {"/new", "/reset", "/clear"}
 
 BANNER = """\
 wikimedia-agent — answers grounded in live Wikipedia, with cited sources.
 
-Each question is answered INDEPENDENTLY: there is no conversation memory yet, so
-follow-ups like "where was he born?" will not resolve. That arrives in Phase 8.
+Follow-up questions resolve against earlier turns, so "Who was Ben Franklin?"
+then "Where was he born?" works. Sources keep their numbers for the session.
 
-Type a question, or /exit to leave. Each question costs roughly a cent.
+  /new    start a fresh conversation
+  /exit   leave
+
+Each question costs roughly a cent.
 """
 
 
@@ -53,13 +56,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _interactive(agent: object) -> int:
-    """A loop of independent questions.
+    """A conversation. Earlier turns carry, so follow-ups resolve (§2.5)."""
+    from .session import Session
 
-    Deliberately not called a conversation: without the session registry (§2.5)
-    nothing carries between turns, and implying otherwise would be worse than
-    offering no loop at all.
-    """
+    session = Session(agent=agent)  # type: ignore[arg-type]
     print(BANNER)
+
     while True:
         try:
             question = input("? ").strip()
@@ -69,16 +71,26 @@ def _interactive(agent: object) -> int:
 
         if not question:
             continue
-        if question.lower() in EXIT_COMMANDS:
+        lowered = question.lower()
+        if lowered in EXIT_COMMANDS:
             return 0
+        if lowered in RESET_COMMANDS:
+            session.reset()
+            print("Started a fresh conversation. Source numbering restarts.\n")
+            continue
 
-        _ask_once(agent, question)
+        _ask_once(session, question)
+
+        note = session.history_note
+        if note:
+            print(f"\n{note}")
         print()
 
 
-def _ask_once(agent: object, question: str) -> int:
+def _ask_once(asker: object, question: str) -> int:
+    """Ask one question of an agent or a session; both expose ``ask``."""
     try:
-        answer = agent.ask(question)  # type: ignore[attr-defined]
+        answer = asker.ask(question)  # type: ignore[attr-defined]
     except Exception as exc:  # noqa: BLE001 -- a CLI reports, it does not traceback
         print(f"Failed to answer: {exc}", file=sys.stderr)
         return 1

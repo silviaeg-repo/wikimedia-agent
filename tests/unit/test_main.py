@@ -160,14 +160,56 @@ def test_loop_answers_several_questions(monkeypatch, capsys):
     assert "Second answer" in out
 
 
-def test_loop_warns_that_questions_are_independent(monkeypatch, capsys):
-    """Implying conversation memory we do not have would be worse than no loop."""
+def test_the_banner_documents_the_session_commands(monkeypatch, capsys):
     patched_agent(monkeypatch, answering_api())
     feed(monkeypatch, [])
     entry.main([])
     out = capsys.readouterr().out
-    assert "no conversation memory" in out.lower()
-    assert "Phase 8" in out
+    assert "/new" in out
+    assert "/exit" in out
+    assert "Follow-up questions resolve" in out
+
+
+def test_follow_ups_carry_earlier_turns(monkeypatch):
+    """The loop is a conversation: turn two must see turn one (§2.5)."""
+    fetch = assistant_message(
+        content=[tool_use_block("get_summary", {"title": "Gerald J. Ford"}, "t1")],
+        stop_reason="tool_use",
+    )
+    api = RecordedAnthropic(
+        fetch, assistant_message(content=[text_block("A businessman. [[Gerald J. Ford]]")]),
+        fetch, assistant_message(content=[text_block("More detail. [[Gerald J. Ford]]")]),
+    )
+    patched_agent(monkeypatch, api)
+    feed(monkeypatch, ["Who is Gerald J. Ford?", "Tell me more about him"])
+    entry.main([])
+
+    contents = [
+        message["content"]
+        for message in api.messages_sent(2)
+        if isinstance(message["content"], str)
+    ]
+    assert any("Who is Gerald J. Ford?" in c for c in contents)
+    assert any("Tell me more about him" in c for c in contents)
+
+
+@pytest.mark.parametrize("command", ["/new", "/reset", "/clear"])
+def test_reset_starts_a_fresh_conversation(monkeypatch, capsys, command):
+    api = RecordedAnthropic(
+        assistant_message(content=[text_block("First.")]),
+        assistant_message(content=[text_block("Second.")]),
+    )
+    patched_agent(monkeypatch, api)
+    feed(monkeypatch, ["first question", command, "second question"])
+    entry.main([])
+
+    assert "fresh conversation" in capsys.readouterr().out
+    contents = [
+        message["content"]
+        for message in api.messages_sent(1)
+        if isinstance(message["content"], str)
+    ]
+    assert not any("first question" in c for c in contents)
 
 
 @pytest.mark.parametrize("command", ["/exit", "/quit", "exit", "QUIT"])
@@ -205,11 +247,11 @@ def test_a_failed_question_does_not_end_the_loop(monkeypatch, capsys):
     calls = {"n": 0}
     original = agent.ask
 
-    def flaky(question):
+    def flaky(question, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("transient upstream failure")
-        return original(question)
+        return original(question, **kwargs)
 
     monkeypatch.setattr(agent, "ask", flaky)
     feed(monkeypatch, ["first", "second"])

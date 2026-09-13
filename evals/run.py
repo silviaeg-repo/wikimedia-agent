@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from wikimedia_agent.agent import DEFAULT_MODEL, WikipediaAgent, build_agent
+from wikimedia_agent.session import Session
 
 from .cost import CostTracker, estimate
 from .judge import JUDGE_MODEL, Judge, JudgeError, build_package
@@ -45,6 +46,8 @@ CATEGORY_SCORERS: dict[str, tuple[str, ...]] = {
                    "source_disclosure"),
     "multi-hop": ("grounding", "citation_validity", "provenance_integrity",
                   "source_disclosure"),
+    "follow-up": ("grounding", "citation_validity", "source_disclosure",
+                  "marker_stability"),
     "not-in-wikipedia": ("refusal_correctness", "citation_validity"),
     "ambiguous-no-context": ("asks_for_clarification",),
     "unambiguous-control": ("does_not_ask", "grounding", "citation_validity"),
@@ -99,9 +102,12 @@ class Report:
         }
 
 
-def _retrieved_record(provenance: Any, grades: dict[int, Any]) -> dict[str, Any]:
+def _retrieved_record(
+    provenance: Any, grades: dict[int, Any], markers: dict[int, int]
+) -> dict[str, Any]:
     grade = grades.get(provenance.page_id)
     return {
+        "marker": markers.get(provenance.page_id),
         "title": provenance.title,
         "section": provenance.section,
         "revision_id": provenance.revision_id,
@@ -114,6 +120,10 @@ def _retrieved_record(provenance: Any, grades: dict[int, Any]) -> dict[str, Any]
 def record_turn(question: str, answer: Any) -> TurnRecord:
     """Capture one turn as the judge will read it."""
     rendered = answer.rendered
+    markers = {
+        citation.provenance.page_id: citation.number
+        for citation in (rendered.citations if rendered else [])
+    }
     return TurnRecord(
         question=question,
         answer_text=answer.text,
@@ -124,7 +134,8 @@ def record_turn(question: str, answer: Any) -> TurnRecord:
             {"name": call.name, "arguments": call.arguments} for call in answer.tool_calls
         ],
         retrieved=[
-            _retrieved_record(provenance, answer.grades) for provenance in answer.sources
+            _retrieved_record(provenance, answer.grades, markers)
+            for provenance in answer.sources
         ],
         stop_reason=answer.stop_reason,
         input_tokens=answer.input_tokens,
@@ -133,10 +144,15 @@ def record_turn(question: str, answer: Any) -> TurnRecord:
 
 
 def run_entry(agent: WikipediaAgent, entry: EvalEntry) -> Transcript:
+    """Run one entry, as a conversation when it has several turns.
+
+    A multi-turn entry graded as independent questions would score the wrong
+    thing entirely: "Where was he born?" has no referent without turn one.
+    """
     transcript = Transcript(entry_id=entry.id, category=entry.category, agent_model=agent.model)
+    session = Session(agent=agent)
     for turn in entry.turns:
-        # Phase 6 runs each turn independently; conversation arrives in Phase 8.
-        transcript.turns.append(record_turn(turn, agent.ask(turn)))
+        transcript.turns.append(record_turn(turn, session.ask(turn)))
     return transcript
 
 

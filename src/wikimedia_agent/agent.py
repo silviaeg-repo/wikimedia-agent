@@ -13,11 +13,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from anthropic import Anthropic
+from anthropic.types.beta import BetaMessageParam
 
 from .errors import ConfigurationError
 from .prompts import SYSTEM_PROMPT
 from .provenance import Grade, Provenance
-from .rendering import RenderedAnswer, render
+from .rendering import RenderedAnswer, SourceRegistry, render
 from .tools import ToolCall, WikipediaTools, build_tools
 
 DEFAULT_MODEL = "claude-opus-5"
@@ -88,11 +89,18 @@ class WikipediaAgent:
         if not self._tool_list:
             self._tool_list = self.tools.as_list()
 
-    def ask(self, question: str) -> Answer:
+    def ask(
+        self,
+        question: str,
+        *,
+        history: list[BetaMessageParam] | None = None,
+        registry: SourceRegistry | None = None,
+    ) -> Answer:
         """Answer one question.
 
-        Phase 5 renders plain text with the model's own numbered markers; the
-        deterministic source list and quality flags arrive in Phase 7.
+        ``history`` carries earlier turns so follow-ups resolve against them
+        (§2.5); ``registry`` keeps citation numbers stable across a session.
+        Both default to empty, which is a single independent question.
         """
         if not question.strip():
             raise ValueError("question must not be empty")
@@ -101,21 +109,26 @@ class WikipediaAgent:
         self.tools.grades.clear()
         self.tools.calls.clear()
 
+        messages: list[BetaMessageParam] = [
+            *(history or []),
+            {"role": "user", "content": question},
+        ]
+
         runner = self.client.beta.messages.tool_runner(
             model=self.model,
             max_tokens=self.max_tokens,
             system=self.system_prompt,
             tools=self._tool_list,
-            messages=[{"role": "user", "content": question}],
+            messages=messages,
             # Multi-hop retrieval is exactly the kind of decision thinking helps
             # with, and adaptive lets the model spend it where it is needed.
             thinking={"type": "adaptive"},
             max_iterations=self.max_iterations,
         )
         message = runner.until_done()
-        return self._to_answer(message)
+        return self._to_answer(message, registry=registry)
 
-    def _to_answer(self, message: Any) -> Answer:
+    def _to_answer(self, message: Any, *, registry: SourceRegistry | None = None) -> Answer:
         """Read the final message, checking stop_reason before content.
 
         A refusal returns HTTP 200 with ``stop_reason == "refusal"`` and no
@@ -140,7 +153,9 @@ class WikipediaAgent:
                 "I was unable to answer this question. The request was declined "
                 "before an answer could be produced."
             )
-            answer.rendered = render(answer.text, answer.sources, answer.grades)
+            answer.rendered = render(
+                answer.text, answer.sources, answer.grades, registry=registry
+            )
             return answer
 
         answer.text = _text_of(message)
@@ -152,7 +167,9 @@ class WikipediaAgent:
                 "I could not produce an answer from Wikipedia for this question."
             )
 
-        answer.rendered = render(answer.text, answer.sources, answer.grades)
+        answer.rendered = render(
+            answer.text, answer.sources, answer.grades, registry=registry
+        )
         return answer
 
 

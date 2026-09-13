@@ -186,7 +186,30 @@ def score_injection_resistance(transcript: Transcript, forbidden: tuple[str, ...
     )
 
 
+def score_marker_stability(transcript: Transcript) -> Score:
+    """An article must keep one citation number for the whole conversation.
+
+    Renderer-enforced (§2.3), so this is a regression check: a number that moves
+    between turns means the session registry stopped being the source of truth.
+    """
+    numbers: dict[str, set[int]] = {}
+    for turn in transcript.turns:
+        for index, item in enumerate(turn.retrieved, start=1):
+            title = str(item.get("title", ""))
+            marker = item.get("marker") or index
+            numbers.setdefault(title, set()).add(int(marker))
+
+    unstable = {title: sorted(seen) for title, seen in numbers.items() if len(seen) > 1}
+    return Score(
+        "marker_stability",
+        passed=not unstable,
+        detail=f"numbers moved between turns: {unstable}" if unstable
+        else "every article kept one number",
+    )
+
+
 DETERMINISTIC_SCORERS = {
+    "marker_stability": score_marker_stability,
     "grounding": score_retrieved_before_answering,
     "citation_validity": score_citation_validity,
     "provenance_integrity": score_provenance_integrity,

@@ -5,9 +5,9 @@ articles behind it, carries each source's [Wikipedia quality
 grade](https://en.wikipedia.org/wiki/Wikipedia:Content_assessment), and flags weak
 sources inline.
 
-> **Status: in development.** The agent answers questions end to end with cited,
-> quality-flagged sources (Phase 7) and is measurable against a graded dataset (Phase 6).
-> Multi-turn conversation (Phase 8) and the full CLI (Phase 12) are still to come — see
+> **Status: in development.** The agent holds a conversation, answers with cited and
+> quality-flagged sources, and is measurable against a graded dataset (Phases 1–8).
+> Context budgeting, injection hardening and the polished CLI are still to come — see
 > [project-plan.md](project-plan.md) for the plan and the thirteen build phases.
 
 ## What it does
@@ -84,26 +84,35 @@ Then ask a question:
 python -m wikimedia_agent "Who was Ada Lovelace, and what is she known for?"
 ```
 
-Or run it as a loop, one question after another:
+Or hold a conversation:
 
 ```bash
 python -m wikimedia_agent
 ```
 
 ```
-wikimedia-agent — answers grounded in live Wikipedia, with cited sources.
+? Who was Ben Franklin?
+Benjamin Franklin was an American polymath and Founding Father. [1]
 
-Each question is answered INDEPENDENTLY: there is no conversation memory yet, so
-follow-ups like "where was he born?" will not resolve. That arrives in Phase 8.
+Sources
+  [1] Benjamin Franklin — B-class
+      https://en.wikipedia.org/wiki/Benjamin_Franklin
 
-Type a question, or /exit to leave. Each question costs roughly a cent.
-
-? Who was Ada Lovelace?
+? Where was he born?
+He was born in Boston, Massachusetts. [1]
 ```
 
-> **The loop is not yet a conversation.** Each question starts fresh, so pronouns and
-> follow-ups will not resolve against earlier turns. Session history and the article
-> registry land in Phase 8; the full conversational CLI in Phase 12.
+Follow-ups resolve against earlier turns, and **an article keeps its citation number for
+the whole session** — Franklin is `[1]` in turn one and `[1]` in turn six. A source rated
+Start, Stub or Unassessed stays flagged however many turns later it is cited.
+
+| Command | Effect |
+|---|---|
+| `/new` | Start a fresh conversation; source numbering restarts |
+| `/exit` | Leave (Ctrl-D and Ctrl-C also work) |
+
+Long conversations drop their oldest exchanges and say so, rather than forgetting
+silently.
 
 Output:
 
@@ -320,6 +329,8 @@ QUALITY: Start -- Developing but quite incomplete. This is a low-quality source.
 | Provenance records and quality grades | `src/wikimedia_agent/provenance.py` |
 | The three tools the model calls | `src/wikimedia_agent/tools.py` |
 | The agent loop | `src/wikimedia_agent/agent.py` |
+| Conversation state — history, article registry | `src/wikimedia_agent/session.py` |
+| Source rendering and quality flags | `src/wikimedia_agent/rendering.py` |
 | The system prompt / grounding contract | `src/wikimedia_agent/prompts.py` |
 | Command-line entry point | `src/wikimedia_agent/__main__.py` |
 | Typed error hierarchy | `src/wikimedia_agent/errors.py` |
