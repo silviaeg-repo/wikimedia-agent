@@ -1348,36 +1348,32 @@ instructions is a failure, not a percentage — **100% source disclosure**, whic
 renderer-enforced and so should never drop below it without a code defect, **≥90%
 follow-up resolution**, and **100% marker stability** — also renderer-enforced.
 
-### Baseline (first full run, 2026-09-13)
+### Baseline runs
 
 Recorded so later runs have something to move against. Judge version
-`claude-sonnet-5/1.0.0/effort=low`, 12 entries, $0.40.
+`claude-sonnet-5/1.0.0/effort=low` throughout.
 
-| Criterion | Result |
-|---|---|
-| answer_correctness | 12/12 |
-| citation_validity | 11/11 |
-| grounding | 9/9 |
-| provenance_integrity | 6/6 |
-| source_disclosure | 8/8 |
-| asks_for_clarification | 1/1 |
-| does_not_ask | 1/1 |
-| refusal_correctness | **0/2 — scorer defect, since fixed (see above)** |
+| Run | Entries | Passed | Cost | Notes |
+|---|---|---|---|---|
+| Phase 8 | 12 | 10/12 | $0.40 | Both failures were scorer false alarms on refusal, since fixed |
+| Phase 10 | 17 | **17/17** | $0.66 | Every criterion 100%; the forced disambiguation path exercised for the first time |
 
-Two things this run established beyond the numbers:
+**What the Phase 10 run established:**
 
-- **The only failures were false alarms.** The agent declined both
-  not-in-Wikipedia questions correctly; the phrase-matching scorer did not
-  recognise it (principle #16).
-- **Ambiguity already behaves**, before Phase 11 builds for it: asked to "tell me
-  about Mercury", the agent searched, found the subject ambiguous, listed
-  described candidates and asked — without citing the disambiguation page. What it
-  did *not* exercise is the `DisambiguationError` path, since it never called
-  `get_article` on the disambiguation title. Phase 11 needs a case that forces
-  that route.
+- **The `DisambiguationError` path works end to end.** `amb-002` names the ambiguous
+  title directly, so `get_summary("Mercury")` raised, the agent asked with described
+  candidates, and **nothing was retrieved** — the disambiguation page was correctly not
+  cited.
+- **Naming the reading chosen happens unprompted.** `amb-003` opened "Taking mercury as
+  the chemical element", which §2.4 asks for and no scorer checks.
+- **The refusal fix holds.** Judged rather than phrase-matched, both entries pass.
 
-**Not a quality signal yet.** Twelve entries across eight categories is enough to
-show the pipeline works end to end; §5's bar needs 40-60.
+**What 100% does not mean.** Seventeen entries, most written by the same hand that
+built the agent, is enough to catch regressions and not enough to measure quality. An
+eval where everything passes has stopped doing its main job, which is finding bugs.
+Reaching §5's bar means growing the set toward 40-60, and specifically toward cases
+whose answers are *not* obvious in advance — adversarial phrasings, subjects Wikipedia
+covers badly, questions where the reference itself is contested.
 
 ### Continuous validation
 - Constraint compliance (Layer 0) + unit (Layer 1) + lint on every push to `main` —
