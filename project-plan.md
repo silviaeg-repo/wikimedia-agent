@@ -17,7 +17,9 @@ principle conflict, **the constraint wins and the design changes**.
 The agent must be powered by an Anthropic model called through the Anthropic API
 (`POST /v1/messages`, via the official `anthropic` SDK).
 
-**Satisfied by:** `claude-opus-5` called directly through the `anthropic` SDK (§2.2).
+**Satisfied by:** `claude-opus-5` for the agent, called directly through the `anthropic`
+SDK (§2.2). The eval judge is `claude-sonnet-5` — also Anthropic via the Anthropic API, so
+C1 holds on both sides.
 **Consequence:** there is no provider abstraction. With the provider fixed by the
 assignment, a vendor-neutral port would buy flexibility C1 forbids — so the agent depends
 on the Anthropic SDK directly and uses its `tool_runner`.
@@ -44,8 +46,8 @@ Compliance is tested, not asserted:
   `type` field** — user-defined tools carry `name` / `description` / `input_schema`,
   while server tools are exactly the ones identified by `type`. This catches a forbidden
   tool being added later by anyone.
-- The client in use is the `anthropic` SDK and the configured model ID is an Anthropic
-  model (C1).
+- The client in use is the `anthropic` SDK, and **both** configured model IDs — agent and
+  judge — are Anthropic models (C1).
 - CI runs both on every commit, so a C2 violation cannot merge quietly.
 
 ---
@@ -94,14 +96,22 @@ concurrency, which the API etiquette rules out (§2.1).
 **Stack:** Python 3.11+, the official `anthropic` SDK (C1), `httpx` for the Wikipedia
 calls, `pytest` for tests.
 
-**Model:** `claude-opus-5` with adaptive thinking, called directly through the
-`anthropic` SDK (§2.2) — multi-hop retrieval decisions are exactly what thinking helps
-with. The model ID stays a config value so eval runs can compare tiers, but there is no
-provider abstraction: C1 fixes the provider, so the agent depends on the Anthropic SDK
-directly. Reference cost: $5 / $25 per million input / output tokens. We will
-measure real per-question cost during the eval phase (§5) and only then decide whether a
-cheaper model or a lower effort setting holds quality — a measured decision, not an
-upfront one.
+**Models — two, configured separately.** The agent and the eval judge are distinct
+config keys, never one shared value:
+
+| Role | Model | Why |
+|---|---|---|
+| **Agent** | `claude-opus-5`, adaptive thinking | Multi-hop retrieval decisions are exactly what thinking helps with |
+| **Judge** (§5) | `claude-sonnet-5`, adaptive thinking, low effort | A different tier from the agent, which partially mitigates self-preference; 1M context holds a full transcript; ~2.5× cheaper |
+
+Reference cost: Opus 5 at $5 / $25, Sonnet 5 at $2 / $10 per million input / output tokens.
+Both are Anthropic models via the Anthropic API, so C1 holds for the agent and the judge
+alike.
+
+Splitting the keys is what makes model choice measurable: eval runs can vary either side
+independently, and we decide whether a cheaper agent holds quality from numbers rather
+than upfront (principle #15). There is no provider abstraction — C1 fixes the provider, so
+the agent depends on the Anthropic SDK directly.
 
 **Agent loop:** the Anthropic SDK's `tool_runner` (§2.2) drives the request →
 tool-execute → loop cycle. We supply the tool functions; the SDK supplies the loop and
@@ -652,7 +662,9 @@ wins and the scope shrinks.
 18. **All retrieval is ours.** No hosted search, no server-side fetch tool, no managed
     RAG. The agent's only route to the world is the Wikipedia client in §2.1 — which is
     also what makes every answer auditable.
-19. **The judge is a fixed instrument, not a prompt.** One versioned judge — same model,
+19. **The judge is a fixed instrument, not a prompt.** A judge configured separately from
+    the agent — `claude-sonnet-5` grading `claude-opus-5`, so it is not marking its own
+    tier's homework — and pinned as one versioned unit: same model,
     prompt, rubric and settings — applied systematically across every category, receiving
     the context, the full interaction trace, and the deterministic signals code already
     established (whether the agent searched or answered from context, whether references
@@ -851,7 +863,12 @@ citation-validity cases.
   written under different judge versions.
 - Judge output parses into per-criterion verdicts; a malformed response fails loudly
   rather than scoring zero.
-- The calibration set re-runs and is asserted against its hand-graded labels.
+- The calibration set re-runs and is asserted against its hand-graded labels, and the
+  configured judge is rejected when agreement falls below the gate threshold.
+- Agent and judge model IDs are read from separate config keys; neither defaults to the
+  other.
+- The judge package is size-checked against the judge model's context window and fails
+  loudly rather than truncating.
 
 **Evals (paid, scoped):**
 1. **Single-hop factual**, ~5 questions — the first real score.
@@ -982,7 +999,8 @@ so we are never tuning against a moving target.
 The §0 checks, run first and on every commit because a violation invalidates the whole
 deliverable regardless of how well it scores:
 - No entry in the outbound `tools` array carries a `type` field (C2).
-- The client in use is the `anthropic` SDK, with an Anthropic model ID (C1).
+- The client in use is the `anthropic` SDK, and both the agent and judge model IDs are
+  Anthropic models (C1).
 - No hosted-retrieval dependency appears in `pyproject.toml`.
 
 ### Layer 1 — Unit tests (no network, no model)
@@ -1136,12 +1154,23 @@ handed over as input. It keeps the judge's job narrow, which is what makes it co
 one-line reason. A single blended score hides which criterion moved and makes regressions
 untraceable.
 
+**The judge's own settings** are pinned independently of the agent's, not copied from
+them: `claude-sonnet-5`, adaptive thinking, `output_config.effort: "low"`. Low effort is
+deliberate — the judge's task is narrow and bounded, and a deeper-thinking judge buys
+variance rather than accuracy. Its 1M context holds a full multi-turn transcript; the
+runner still **size-checks the judge package and fails loudly** rather than truncating a
+transcript, since silently grading a partial transcript would be a wrong score presented
+as a right one (principle #12).
+
 **Consistency measures:**
 - Fixed criterion order; the judge never sees other entries' scores, so it cannot drift
   or anchor within a run.
-- Deterministic settings (pinned model, low effort, no sampling variation).
+- Deterministic settings, pinned in `judge_version`.
 - **A calibration set** of hand-graded entries re-run on every judge change — if the judge
-  disagrees with the human labels, the judge changed, not the agent.
+  disagrees with the human labels, the judge changed, not the agent. Agreement with the
+  human labels is a **release gate**: a judge model that falls below the threshold is not
+  used, and the fallback (a more capable judge) is recorded with the reason. This is what
+  makes a cheaper judge a measured win rather than a hopeful one.
 - **Self-preference is a known risk**, since the judge and the agent are the same model
   family. Mitigated by keeping the judge's scope narrow (above), by the calibration set,
   and by the fact that the scores which gate release — citations, provenance, disclosure,
@@ -1196,7 +1225,8 @@ follow-up resolution**, and **100% marker stability** — also renderer-enforced
 | Injected content from an early turn influencing a later one | Multi-turn case in the injection eval category; the §2.3 defences are turn-independent |
 | Paid model calls fire accidentally during development | Layer 3 is marker-excluded from the default `pytest` run, kept out of watch modes and pre-commit hooks, and needs an explicit command that names a scope (principle #14) |
 | Judge drift makes scores incomparable across runs | Judge model, prompt, rubric and settings are pinned as a `judge_version` stamped on every report; the runner refuses cross-version comparisons, and a hand-graded calibration set gates every judge change (§5) |
-| Judge self-preference — it grades the same model family it is judging | The judge's scope is narrow (deterministic facts are computed in code and handed to it), the release-gating scores are not the judge's to give, and the calibration set catches divergence from human labels |
+| Judge self-preference — it grades work from the same vendor family | Judge and agent are different models (`claude-sonnet-5` judging `claude-opus-5`), the judge's scope is narrow (deterministic facts are computed in code and handed to it), the release-gating scores are not the judge's to give, and the calibration set catches divergence from human labels |
+| A cheaper judge silently grades worse | Calibration agreement is a release gate, not a report line — a judge below threshold is not used, and the fallback is recorded with its reason |
 | Per-question cost drifting upward | Cost recorded per eval run; prompt caching on the stable system prompt + tool definitions |
 | Multi-hop loops running away | Cap retrieval calls per question; consider a task budget on the agent loop |
 
