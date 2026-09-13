@@ -21,18 +21,23 @@ from __future__ import annotations
 import random
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
 import httpx
 
 from . import PROJECT_URL, USER_AGENT_NAME, __version__
+from .cache import DEFAULT_TTL, ResponseCache, cache_key
 from .errors import (
     ConfigurationError,
+    DisambiguationError,
+    PageNotFound,
     RateLimited,
     WikipediaAPIError,
+    WikipediaError,
     WikipediaTimeout,
 )
+from .models import Article, SearchResult, Summary, split_sections, strip_html
 
 DEFAULT_API_URL = "https://en.wikipedia.org/w/api.php"
 
@@ -47,6 +52,23 @@ DEFAULT_BACKOFF_BASE = 1.0
 MAX_BACKOFF = 30.0
 
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+# -- bounds (§2.1). Enforced here, below the tool layer, so no tool argument --
+# -- and no prompt-injected value can raise them (principle #16).           --
+
+DEFAULT_SEARCH_LIMIT = 5
+MAX_SEARCH_LIMIT = 20
+"""The API permits 500 results. Past the first handful it is context-window
+spend with no answer value, so we cap far lower."""
+
+MAX_TITLES_PER_REQUEST = 50
+"""The documented multivalue limit for clients without `apihighlimits`."""
+
+MAX_ARTICLE_CHARS = 24_000
+"""Whole-article truncation budget, roughly 6k tokens. Section-scoped fetching
+is the intended path; this stops an unscoped fetch from flooding the context."""
+
+MAX_DISAMBIGUATION_OPTIONS = 25
 
 _PLACEHOLDER_CONTACT_MARKERS = (
     "example.com",
@@ -107,6 +129,7 @@ class WikipediaClient:
         read_timeout: float = DEFAULT_READ_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff_base: float = DEFAULT_BACKOFF_BASE,
+        cache_ttl: float = DEFAULT_TTL,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
@@ -121,6 +144,7 @@ class WikipediaClient:
         self._sleep = sleep
         self._monotonic = monotonic
         self._jitter = jitter
+        self.cache = ResponseCache(ttl=cache_ttl, monotonic=monotonic)
 
         # Serial by policy: one lock, held for the whole request, so two threads
         # cannot overlap calls even if a caller tries.
@@ -186,6 +210,11 @@ class WikipediaClient:
         """
         query: dict[str, Any] = {"format": "json", "formatversion": 2, **params}
 
+        key = cache_key(self.api_url, query)
+        cached = self.cache.get(key)
+        if cached is not None:
+            return cached
+
         with self._lock:
             last_timeout: WikipediaTimeout | None = None
             last_status: int | None = None
@@ -226,7 +255,9 @@ class WikipediaClient:
                             )
                         self._sleep(self._backoff_delay(attempt, retry_after))
                         continue
-                    return self._decode(response)
+                    body = self._decode(response)
+                    self.cache.put(key, body)
+                    return body
 
                 # Timeout path: retry or surface the timeout itself.
                 if attempt >= self.max_retries:
@@ -277,6 +308,216 @@ class WikipediaClient:
             )
 
         return body
+
+    # -- retrieval ---------------------------------------------------------
+
+    def search(self, query: str, limit: int = DEFAULT_SEARCH_LIMIT) -> list[SearchResult]:
+        """Search Wikipedia and return candidate articles.
+
+        ``limit`` is clamped to :data:`MAX_SEARCH_LIMIT` here rather than
+        validated by the caller: bounds belong below the tool layer, where no
+        argument the model chooses can widen them (principle #16).
+        """
+        if not query.strip():
+            raise ValueError("search query must not be empty")
+
+        effective = max(1, min(limit, MAX_SEARCH_LIMIT))
+        body = self.request(
+            {
+                "action": "query",
+                "list": "search",
+                "srsearch": query,
+                "srlimit": effective,
+            }
+        )
+        hits = body.get("query", {}).get("search", [])
+        if not isinstance(hits, list):
+            raise WikipediaAPIError("invalidresponse", "search results missing")
+
+        return [
+            SearchResult(
+                title=str(hit.get("title", "")),
+                page_id=int(hit.get("pageid", 0)),
+                snippet=strip_html(str(hit.get("snippet", ""))),
+                word_count=int(hit.get("wordcount", 0)),
+            )
+            for hit in hits
+        ]
+
+    def _fetch_pages(self, titles: Sequence[str], *, intro_only: bool) -> dict[str, Any]:
+        """Fetch one or more pages in a single request.
+
+        Multivalue parameters are the sanctioned way to go faster: several
+        titles in one call, rather than several calls in parallel (§2.1).
+        """
+        if not titles:
+            raise ValueError("at least one title is required")
+        if len(titles) > MAX_TITLES_PER_REQUEST:
+            raise ValueError(
+                f"at most {MAX_TITLES_PER_REQUEST} titles per request, got {len(titles)}"
+            )
+
+        params: dict[str, Any] = {
+            "action": "query",
+            "prop": "extracts|pageprops",
+            "explaintext": 1,
+            "redirects": 1,
+            "titles": "|".join(titles),
+        }
+        if intro_only:
+            params["exintro"] = 1
+        return self.request(params)
+
+    @staticmethod
+    def _redirect_map(body: dict[str, Any]) -> dict[str, str]:
+        """Map final title -> the title originally asked for.
+
+        Covers both ``normalized`` (case/underscore fixes) and ``redirects``
+        (actual page redirects), so ``ada_byron`` traces back correctly.
+        """
+        query = body.get("query", {})
+        origin: dict[str, str] = {}
+        for entry in query.get("normalized", []) or []:
+            origin[str(entry.get("to"))] = str(entry.get("from"))
+        for entry in query.get("redirects", []) or []:
+            source = str(entry.get("from"))
+            origin[str(entry.get("to"))] = origin.get(source, source)
+        return origin
+
+    def _page_or_raise(self, body: dict[str, Any], requested: str) -> dict[str, Any]:
+        """Pull a single page out of a response, turning absence into typed errors."""
+        pages = body.get("query", {}).get("pages", [])
+        if not isinstance(pages, list) or not pages:
+            raise PageNotFound(requested)
+
+        page = pages[0]
+        if not isinstance(page, dict):
+            raise WikipediaAPIError("invalidresponse", "page entry was not an object")
+        title = str(page.get("title", requested))
+
+        if page.get("missing"):
+            raise PageNotFound(requested)
+
+        pageprops = page.get("pageprops") or {}
+        if "disambiguation" in pageprops:
+            raise DisambiguationError(title, self._disambiguation_options(title))
+
+        return page
+
+    def _disambiguation_options(self, title: str) -> list[str]:
+        """Candidate titles a disambiguation page points at.
+
+        A second request, but only on this path -- and it is what lets the agent
+        retry with a concrete title instead of dead-ending (§2.1).
+        """
+        try:
+            body = self.request(
+                {
+                    "action": "query",
+                    "prop": "links",
+                    "plnamespace": 0,
+                    "pllimit": MAX_DISAMBIGUATION_OPTIONS,
+                    "titles": title,
+                }
+            )
+        except WikipediaError:
+            return []
+
+        pages = body.get("query", {}).get("pages", [])
+        if not isinstance(pages, list) or not pages:
+            return []
+        links = pages[0].get("links") or []
+        return [str(link.get("title", "")) for link in links if link.get("title")]
+
+    def get_summary(self, title: str) -> Summary:
+        """Fetch an article's lead extract.
+
+        Cheap disambiguation: read the lead before deciding whether to spend
+        context on the full article.
+        """
+        body = self._fetch_pages([title], intro_only=True)
+        page = self._page_or_raise(body, title)
+        resolved = str(page.get("title", title))
+        return Summary(
+            title=resolved,
+            page_id=int(page.get("pageid", 0)),
+            extract=str(page.get("extract", "")).strip(),
+            requested_title=title,
+            redirected_from=self._redirect_map(body).get(resolved),
+        )
+
+    def get_article(self, title: str, section: str | None = None) -> Article:
+        """Fetch an article, or one section of it.
+
+        Section-scoped by preference: whole-article text is truncated at
+        :data:`MAX_ARTICLE_CHARS` so an unscoped fetch cannot flood the context
+        window. Truncation is reported on the result, never silent (principle #12).
+        """
+        body = self._fetch_pages([title], intro_only=False)
+        page = self._page_or_raise(body, title)
+
+        resolved = str(page.get("title", title))
+        extract = str(page.get("extract", ""))
+        sections = split_sections(extract)
+        redirected_from = self._redirect_map(body).get(resolved)
+
+        if section is not None:
+            found = None
+            for candidate in sections:
+                if candidate.title.casefold() == section.strip().casefold():
+                    found = candidate
+                    break
+            if found is None:
+                available = ", ".join(s.title for s in sections[:10]) or "none"
+                raise WikipediaAPIError(
+                    "nosuchsection",
+                    f"{resolved!r} has no section {section!r} (available: {available})",
+                )
+            return Article(
+                title=resolved,
+                page_id=int(page.get("pageid", 0)),
+                text=found.text,
+                sections=sections,
+                requested_title=title,
+                redirected_from=redirected_from,
+                section_title=found.title,
+            )
+
+        truncated = len(extract) > MAX_ARTICLE_CHARS
+        return Article(
+            title=resolved,
+            page_id=int(page.get("pageid", 0)),
+            text=extract[:MAX_ARTICLE_CHARS].strip(),
+            sections=sections,
+            requested_title=title,
+            redirected_from=redirected_from,
+            truncated=truncated,
+        )
+
+    def get_summaries(self, titles: Sequence[str]) -> dict[str, Summary]:
+        """Fetch several lead extracts in one request.
+
+        Batching, not concurrency: this is how we go faster without violating
+        the serial-request guidance (§2.1). Missing and disambiguation pages are
+        skipped rather than raising, since one bad title should not lose the rest.
+        """
+        body = self._fetch_pages(list(titles), intro_only=True)
+        origin = self._redirect_map(body)
+        results: dict[str, Summary] = {}
+
+        for page in body.get("query", {}).get("pages", []) or []:
+            if page.get("missing") or "disambiguation" in (page.get("pageprops") or {}):
+                continue
+            resolved = str(page.get("title", ""))
+            requested = origin.get(resolved, resolved)
+            results[resolved] = Summary(
+                title=resolved,
+                page_id=int(page.get("pageid", 0)),
+                extract=str(page.get("extract", "")).strip(),
+                requested_title=requested,
+                redirected_from=origin.get(resolved),
+            )
+        return results
 
     # -- a trivial endpoint, to exercise the discipline above ---------------
 

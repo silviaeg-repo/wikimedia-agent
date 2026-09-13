@@ -15,6 +15,16 @@ from wikimedia_agent.wikipedia import WikipediaClient
 SITEINFO = {"query": {"general": {"sitename": "Wikipedia"}}}
 
 
+def distinct(client, n: int) -> None:
+    """Issue ``n`` *different* requests.
+
+    Identical requests are served from cache and never reach the network, so a
+    throttling test must vary its parameters to exercise the interval at all.
+    """
+    for i in range(n):
+        client.request({"action": "query", "meta": "siteinfo", "probe": i})
+
+
 def _client(clock, transport, **kwargs):
     return WikipediaClient(
         contact=CONTACT,
@@ -28,15 +38,14 @@ def _client(clock, transport, **kwargs):
 def test_first_request_does_not_wait(clock):
     transport, _ = recording_transport(lambda _r: json_response(SITEINFO))
     with _client(clock, transport) as client:
-        client.site_name()
+        distinct(client, 1)
     assert clock.sleeps == []
 
 
 def test_second_request_waits_the_minimum_interval(clock):
     transport, _ = recording_transport(lambda _r: json_response(SITEINFO))
     with _client(clock, transport, min_interval=1.0) as client:
-        client.site_name()
-        client.site_name()
+        distinct(client, 2)
     assert clock.sleeps == [1.0]
 
 
@@ -44,18 +53,18 @@ def test_no_wait_when_enough_time_already_passed(clock):
     """Time spent elsewhere counts toward the interval -- we throttle, not stall."""
     transport, _ = recording_transport(lambda _r: json_response(SITEINFO))
     with _client(clock, transport, min_interval=1.0) as client:
-        client.site_name()
+        client.request({"action": "query", "probe": 1})
         clock.advance(5.0)
-        client.site_name()
+        client.request({"action": "query", "probe": 2})
     assert clock.sleeps == []
 
 
 def test_partial_wait_when_some_time_passed(clock):
     transport, _ = recording_transport(lambda _r: json_response(SITEINFO))
     with _client(clock, transport, min_interval=2.0) as client:
-        client.site_name()
+        client.request({"action": "query", "probe": 1})
         clock.advance(0.5)
-        client.site_name()
+        client.request({"action": "query", "probe": 2})
     assert clock.sleeps == [1.5]
 
 
@@ -78,7 +87,10 @@ def test_requests_are_serialized_across_threads(clock):
 
     transport, seen = recording_transport(handler)
     with _client(clock, transport, min_interval=0.0) as client:
-        threads = [threading.Thread(target=client.site_name) for _ in range(4)]
+        threads = [
+            threading.Thread(target=client.request, args=({"action": "query", "probe": i},))
+            for i in range(4)
+        ]
         for thread in threads:
             thread.start()
         for thread in threads:

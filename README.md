@@ -5,9 +5,10 @@ articles behind it, carries each source's [Wikipedia quality
 grade](https://en.wikipedia.org/wiki/Wikipedia:Content_assessment), and flags weak
 sources inline.
 
-> **Status: in development.** The Wikipedia client (Phase 1) is built and tested. The
-> agent itself arrives in Phase 5 — see [project-plan.md](project-plan.md) for the full
-> plan and the thirteen build phases.
+> **Status: in development.** The Wikipedia client is built and tested through Phase 2 —
+> search, summaries, section-scoped articles, batching and caching. The agent itself
+> arrives in Phase 5; see [project-plan.md](project-plan.md) for the full plan and the
+> thirteen build phases.
 
 ## What it does
 
@@ -96,17 +97,45 @@ The agent CLI lands in Phase 12. Today you can drive the Wikipedia client direct
 
 ```python
 from wikimedia_agent.wikipedia import WikipediaClient
+from wikimedia_agent.errors import DisambiguationError, PageNotFound
 
 with WikipediaClient(contact="you@example-domain.org") as client:
-    print(client.site_name())  # -> "Wikipedia"
+    # Search for candidate articles (limit is capped at 20 inside the client).
+    for hit in client.search("first computer programmer", limit=3):
+        print(hit.title, "--", hit.snippet[:60])
+
+    # A cheap lead extract, following redirects.
+    summary = client.get_summary("Ada Byron")
+    print(summary.title, "<- redirected from", summary.redirected_from)
+
+    # A whole article (truncated at a budget), or one section of it.
+    article = client.get_article("Ada Lovelace")
+    print(article.section_titles[:5], "truncated:", article.truncated)
+    print(client.get_article("Ada Lovelace", section="Death").text[:200])
+
+    # Several titles in one request -- batching, not concurrency.
+    print(sorted(client.get_summaries(["Ada Lovelace", "Charles Babbage"])))
+
+    # Ambiguous titles raise, carrying candidates so you can retry.
+    try:
+        client.get_article("Mercury")
+    except DisambiguationError as exc:
+        print("ambiguous:", exc.options[:3])
+
+    try:
+        client.get_summary("Not A Real Page Xyzzy")
+    except PageNotFound as exc:
+        print(exc)
 ```
 
 ## How it's built
 
 | Area | Where |
 |---|---|
-| Wikipedia client — User-Agent, serial throttling, timeouts, typed errors | `src/wikimedia_agent/wikipedia.py` |
+| Wikipedia client — User-Agent, serial throttling, timeouts, retrieval | `src/wikimedia_agent/wikipedia.py` |
+| Typed results — search hits, articles, sections, summaries | `src/wikimedia_agent/models.py` |
 | Typed error hierarchy | `src/wikimedia_agent/errors.py` |
+| TTL response cache | `src/wikimedia_agent/cache.py` |
 | Offline unit tests | `tests/unit/` |
 | Live API checks (opt-in) | `tests/integration/` |
 
@@ -118,6 +147,9 @@ Two design decisions worth knowing before reading the code:
    etiquette](https://www.mediawiki.org/wiki/API:Etiquette) asks clients to wait for one
    request to finish before sending the next, so there is no concurrency here by design.
    Batching multiple titles into one request is the sanctioned way to go faster.
+3. **Bounds live in the client, not the caller.** Search limits, article size and batch
+   size are clamped inside `wikipedia.py`, so nothing above it — including, later, a
+   model choosing tool arguments — can widen them.
 
 The full rationale, the 20 guiding principles, and the validation strategy are in
 [project-plan.md](project-plan.md).

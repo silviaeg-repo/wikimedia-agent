@@ -139,7 +139,7 @@ answer + citations
 | Tool | Wikimedia endpoint | Purpose |
 |---|---|---|
 | `search_wikipedia(query, limit)` | Action API `list=search` | Find candidate articles for a topic |
-| `get_summary(title)` | REST `/page/summary/{title}` | Cheap lead paragraph; resolve disambiguation before spending tokens on a full article |
+| `get_summary(title)` | Action API `prop=extracts&exintro` | Cheap lead paragraph; resolve disambiguation before spending tokens on a full article |
 | `get_article(title, section=None)` | Action API `prop=extracts\|revisions\|pageassessments` | Full text or one section, plus revision id and quality grade in the same call |
 
 Every tool result carries a `Provenance` record and a quality grade (§2.3), and article
@@ -147,6 +147,12 @@ text is delimited and labelled as untrusted source content.
 
 Section-scoped fetching is the key design decision: large articles are fetched by
 section rather than whole, which keeps context spend proportional to the question.
+
+*Revised in Phase 2.* Summaries originally used the REST `/page/summary/` endpoint. They
+now use the Action API's `exintro` extract instead, so that every retrieval shares one
+endpoint, one throttle, one cache and one error path — and so summaries can be **batched**
+with `titles=A|B|C`, which REST cannot do. Phase 3 needs `revisions` and `pageassessments`
+in the same call, which the REST summary endpoint does not return.
 
 ### Grounding contract
 The system prompt requires the agent to answer only from retrieved text, cite the article,

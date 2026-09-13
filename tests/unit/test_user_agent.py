@@ -51,8 +51,8 @@ def test_every_request_carries_the_user_agent(clock):
     with WikipediaClient(
         contact=CONTACT, transport=transport, sleep=clock.sleep, monotonic=clock.monotonic
     ) as client:
-        client.site_name()
-        client.site_name()
+        client.request({"action": "query", "probe": 1})
+        client.request({"action": "query", "probe": 2})
 
     assert len(seen) == 2
     for request in seen:
