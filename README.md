@@ -5,10 +5,8 @@ articles behind it, carries each source's [Wikipedia quality
 grade](https://en.wikipedia.org/wiki/Wikipedia:Content_assessment), and flags weak
 sources inline.
 
-> **Status: in development.** The agent holds a conversation, answers with cited and
-> quality-flagged sources, and is measurable against a graded dataset (Phases 1–8).
-> Context budgeting, injection hardening and the polished CLI are still to come — see
-> [project-plan.md](project-plan.md) for the plan and the thirteen build phases.
+All thirteen build phases are complete. See [project-plan.md](project-plan.md) for the
+design, the 22 guiding principles, and the reasoning behind each decision.
 
 ## What it does
 
@@ -25,6 +23,7 @@ sources inline.
 - Uses **no hosted search or RAG tools**. Retrieval is a plain HTTP client against the
   public Wikipedia API.
 
+
 ## Requirements
 
 - **Python 3.9 or newer.** Check with `python3 --version`.
@@ -32,6 +31,7 @@ sources inline.
 - An **Anthropic API key** — required to run the agent. Everything else, including the
   whole test suite, runs without one.
 - Network access to `en.wikipedia.org`.
+
 
 ## Getting started
 
@@ -53,8 +53,12 @@ On Windows, activate with `.venv\Scripts\activate` instead.
 ### 3. Install
 
 ```bash
-pip install -e ".[dev]"
+pip install --upgrade pip && pip install -e ".[dev]"
 ```
+
+The pip upgrade matters: the version bundled with older Python releases cannot do an
+editable install from `pyproject.toml` and fails with *"File setup.py or setup.cfg not
+found"*.
 
 ### 4. Set your contact address
 
@@ -67,6 +71,7 @@ export WIKIMEDIA_AGENT_CONTACT="you@example-domain.org"
 ```
 
 Use a real address or project URL you actually monitor.
+
 
 ## Running the agent
 
@@ -81,13 +86,16 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 Then ask a question:
 
 ```bash
-python -m wikimedia_agent "Who was Ada Lovelace, and what is she known for?"
+wikimedia-agent "Who was Ada Lovelace, and what is she known for?"
 ```
+
+(`python -m wikimedia_agent` works identically if you would rather not rely on the
+installed script.)
 
 Or hold a conversation:
 
 ```bash
-python -m wikimedia_agent
+wikimedia-agent
 ```
 
 ```
@@ -108,9 +116,19 @@ Start, Stub or Unassessed stays flagged however many turns later it is cited.
 
 | Command | Effect |
 |---|---|
-| `/new` | Start a fresh conversation; source numbering restarts |
 | `/sources` | List every article read so far, with its quality rating (free — no API call) |
+| `/new` | Start a fresh conversation; source numbering restarts |
+| `/help` | Show the commands |
 | `/exit` | Leave (Ctrl-D and Ctrl-C also work) |
+
+Useful flags — `wikimedia-agent --help` lists them all:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--max-retrievals N` | 8 | Articles one question may read |
+| `--deadline SECONDS` | 60 | Retrieval wall-clock per question |
+| `--token-budget N` | 40000 | Approximate conversation history ceiling |
+| `--model ID` | `claude-opus-5` | Anthropic model for the agent |
 
 **Long conversations stay inside a context budget.** When history grows too large, the
 oldest answers are shortened to their opening plus the articles they cited, and only then
@@ -185,6 +203,7 @@ the model chose to mention — so an article that influenced the answer cannot g
 > depend on earlier turns arrive in Phase 8, and `/new` plus session handling in
 > Phase 12.
 
+
 ## Running the tests
 
 The default run is **offline and free** — no network, no API calls, no cost:
@@ -211,6 +230,7 @@ CI, or in a watch mode. Run the paid smoke check explicitly:
 ```bash
 ANTHROPIC_API_KEY=sk-ant-... WIKIMEDIA_AGENT_CONTACT=you@example-domain.org pytest -m eval -s
 ```
+
 
 ## Evaluating the agent
 
@@ -251,52 +271,94 @@ Most scoring is deterministic and free: citation validity, provenance integrity,
 disclosure, refusal and clarification behaviour are all computed from the transcript in
 code. Only answer correctness needs a judge call.
 
-## Trying it out so far
+The agent is measured against a graded dataset of 20 entries across eleven categories —
+single-hop, multi-hop, conversations, ambiguity and its control, refusals, low-quality
+sources, and adversarial injections.
 
-The agent CLI lands in Phase 12. Today you can drive the Wikipedia client directly:
+Most scoring is deterministic and free: citation validity, provenance integrity, source
+disclosure, grounding, marker stability and injection resistance are computed from a
+stored transcript in code. Only answer correctness, refusal and clarification behaviour
+reach the judge, which is pinned as one versioned unit (`claude-sonnet-5`, grading
+`claude-opus-5`) and stamped on every report.
 
-```python
-from wikimedia_agent.wikipedia import WikipediaClient
-from wikimedia_agent.errors import DisambiguationError, PageNotFound
+Two rules the harness follows, both learned the hard way:
 
-with WikipediaClient(contact="you@example-domain.org") as client:
-    # Search for candidate articles (limit is capped at 20 inside the client).
-    for hit in client.search("first computer programmer", limit=3):
-        print(hit.title, "--", hit.snippet[:60])
+- **A measurement that fails correct behaviour is worse than no measurement.** A refusal
+  phrase-matcher once marked two correct declines as failures; refusals are judged now,
+  and code checks something narrower and exact instead.
+- **Judged and deterministic scores are reported separately**, even when they share a
+  criterion name. Merging them gives a denominator that means nothing.
 
-    # A cheap lead extract, following redirects.
-    summary = client.get_summary("Ada Byron")
-    print(summary.title, "<- redirected from", summary.redirected_from)
 
-    # Every result carries its Wikipedia quality grade and an exact revision.
-    for title in ["Solar System", "Gerald J. Ford"]:
-        result = client.get_summary(title)
-        flag = "  <- flagged in answers" if result.is_poor_quality else ""
-        print(f"{result.title}: {result.grade.label} ({result.tier.value}){flag}")
-        print(f"   revision {result.provenance.revision_id} | {result.provenance.article_url}")
+## How it's built
 
-    # A whole article (truncated at a budget), or one section of it.
-    article = client.get_article("Ada Lovelace")
-    print(article.section_titles[:5], "truncated:", article.truncated)
-    print(client.get_article("Ada Lovelace", section="Death").text[:200])
+| Area | Where |
+|---|---|
+| Wikipedia client — User-Agent, serial throttling, timeouts, retrieval | `src/wikimedia_agent/wikipedia.py` |
+| Typed results — search hits, articles, sections, summaries | `src/wikimedia_agent/models.py` |
+| Provenance records and quality grades | `src/wikimedia_agent/provenance.py` |
+| The three tools the model calls | `src/wikimedia_agent/tools.py` |
+| The agent loop | `src/wikimedia_agent/agent.py` |
+| Conversation state — history, article registry | `src/wikimedia_agent/session.py` |
+| Source rendering and quality flags | `src/wikimedia_agent/rendering.py` |
+| The system prompt / grounding contract | `src/wikimedia_agent/prompts.py` |
+| Command-line interface | `src/wikimedia_agent/cli.py` |
+| Typed error hierarchy | `src/wikimedia_agent/errors.py` |
+| TTL response cache | `src/wikimedia_agent/cache.py` |
+| Eval harness — dataset, scorers, judge, runner | `evals/` |
+| Constraint compliance checks | `tests/compliance/` |
+| Offline unit tests | `tests/unit/` |
+| Live API checks (opt-in) | `tests/integration/` |
 
-    # Several titles in one request -- batching, not concurrency.
-    print(sorted(client.get_summaries(["Ada Lovelace", "Charles Babbage"])))
+Two design decisions worth knowing before reading the code:
 
-    # Ambiguous titles raise, carrying described candidates in the page's own
-    # order -- which is what lets the agent ask the user a useful question
-    # rather than guessing which Mercury you meant.
-    try:
-        client.get_article("Mercury")
-    except DisambiguationError as exc:
-        for option in exc.options[:3]:
-            print(f"  {option.title} -- {option.description}")
+1. **All Wikipedia access is behind one client.** Nothing above `wikipedia.py` knows HTTP
+   exists — callers get typed results and typed exceptions, never a response object.
+2. **Requests are strictly serial.** The [MediaWiki API
+   etiquette](https://www.mediawiki.org/wiki/API:Etiquette) asks clients to wait for one
+   request to finish before sending the next, so there is no concurrency here by design.
+   Batching multiple titles into one request is the sanctioned way to go faster.
+3. **Ambiguity is surfaced, never resolved silently.** A disambiguation page raises
+   rather than returning content, carrying described candidates in the page's own order
+   so the agent can ask a question a user can actually answer.
+4. **Provenance and quality come from API metadata, never article text.** An article
+   claiming to be Featured, or claiming a revision number, changes neither — which is
+   what stops page content from forging its own credibility.
+5. **The agent loop is thin.** The Anthropic SDK's `tool_runner` drives it; this
+   project supplies the tools, the prompt and the bounds. Everything the agent knows
+   about Wikipedia arrives through the three tools.
+6. **Bounds live in the client, not the caller.** Search limits, article size and batch
+   size are clamped inside `wikipedia.py`, so nothing above it — including, later, a
+   model choosing tool arguments — can widen them.
 
-    try:
-        client.get_summary("Not A Real Page Xyzzy")
-    except PageNotFound as exc:
-        print(exc)
-```
+The full rationale, the 20 guiding principles, and the validation strategy are in
+[project-plan.md](project-plan.md).
+
+The full reasoning is in [project-plan.md](project-plan.md); these are the choices that
+shape how the code reads.
+
+**Requests are strictly serial.** The [MediaWiki API
+etiquette](https://www.mediawiki.org/wiki/API:Etiquette) asks clients to wait for one
+request to finish before sending the next, so there is no concurrency here by design.
+Batching several titles into one call is the sanctioned way to go faster.
+
+**Provenance and quality come from API metadata, never article text.** An article
+claiming to be Featured, or claiming a revision number, changes neither. That is what
+stops page content from forging its own credibility — tested with a fixture that tries.
+
+**Quality warnings are produced by code, not by the model.** The model cites by title;
+the renderer assigns numbers and adds the `⚠` from the grade recorded at retrieval time.
+If flagging depended on the model remembering, it would be forgotten on exactly the long
+multi-source answers where it matters most.
+
+**Retrieved text is fenced and labelled untrusted**, and our own fence tags appearing in
+article text are escaped so the boundary cannot be forged from within. This is delimiter
+escaping, not content filtering: every word of the article survives and stays quotable.
+
+**Ambiguity is asked about, not guessed at.** When a subject is ambiguous and nothing
+settles it, the agent asks — and when context does settle it, it names the reading it
+chose, so a wrong reading is correctable in one turn.
+
 
 ## The tool layer
 
@@ -333,56 +395,17 @@ Gerald J. Ford (born 1944) is an American attorney and businessman...
 QUALITY: Start -- Developing but quite incomplete. This is a low-quality source...
 ```
 
-## How it's built
 
-| Area | Where |
-|---|---|
-| Wikipedia client — User-Agent, serial throttling, timeouts, retrieval | `src/wikimedia_agent/wikipedia.py` |
-| Typed results — search hits, articles, sections, summaries | `src/wikimedia_agent/models.py` |
-| Provenance records and quality grades | `src/wikimedia_agent/provenance.py` |
-| The three tools the model calls | `src/wikimedia_agent/tools.py` |
-| The agent loop | `src/wikimedia_agent/agent.py` |
-| Conversation state — history, article registry | `src/wikimedia_agent/session.py` |
-| Source rendering and quality flags | `src/wikimedia_agent/rendering.py` |
-| The system prompt / grounding contract | `src/wikimedia_agent/prompts.py` |
-| Command-line entry point | `src/wikimedia_agent/__main__.py` |
-| Typed error hierarchy | `src/wikimedia_agent/errors.py` |
-| TTL response cache | `src/wikimedia_agent/cache.py` |
-| Eval harness — dataset, scorers, judge, runner | `evals/` |
-| Constraint compliance checks | `tests/compliance/` |
-| Offline unit tests | `tests/unit/` |
-| Live API checks (opt-in) | `tests/integration/` |
+## Limitations
 
-Two design decisions worth knowing before reading the code:
+- **English Wikipedia only**, and only what Wikipedia covers. The agent declines rather
+  than reaching elsewhere — it has no means to, by design.
+- **It cannot verify that Wikipedia is correct.** It grounds answers in what articles
+  say, cites them so you can check, and surfaces each article's quality grade.
+- **Conversations do not survive a restart.** Session memory is in-process only.
+- **The eval set is 20 entries.** Enough to catch regressions, not enough to measure
+  quality; the plan's bar assumes 40–60.
 
-1. **All Wikipedia access is behind one client.** Nothing above `wikipedia.py` knows HTTP
-   exists — callers get typed results and typed exceptions, never a response object.
-2. **Requests are strictly serial.** The [MediaWiki API
-   etiquette](https://www.mediawiki.org/wiki/API:Etiquette) asks clients to wait for one
-   request to finish before sending the next, so there is no concurrency here by design.
-   Batching multiple titles into one request is the sanctioned way to go faster.
-3. **Ambiguity is surfaced, never resolved silently.** A disambiguation page raises
-   rather than returning content, carrying described candidates in the page's own order
-   so the agent can ask a question a user can actually answer.
-4. **Provenance and quality come from API metadata, never article text.** An article
-   claiming to be Featured, or claiming a revision number, changes neither — which is
-   what stops page content from forging its own credibility.
-5. **The agent loop is thin.** The Anthropic SDK's `tool_runner` drives it; this
-   project supplies the tools, the prompt and the bounds. Everything the agent knows
-   about Wikipedia arrives through the three tools.
-6. **Bounds live in the client, not the caller.** Search limits, article size and batch
-   size are clamped inside `wikipedia.py`, so nothing above it — including, later, a
-   model choosing tool arguments — can widen them.
-
-The full rationale, the 20 guiding principles, and the validation strategy are in
-[project-plan.md](project-plan.md).
-
-## A note on Wikipedia content
-
-Wikipedia is user-editable, and this agent treats every retrieved byte as untrusted data
-— quoted and cited, never obeyed as an instruction. It also cannot verify that Wikipedia
-is *correct*: it grounds answers in what articles say, cites them so you can check, and
-surfaces each article's quality grade so you can judge how much weight to give it.
 
 ## License
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,9 +86,22 @@ class Report:
             "started_at": self.started_at,
             "scope": self.scope,
             "cost_usd": round(self.cost_usd, 4),
+            "latency_seconds": self.latency_stats,
             "cost_detail": self.cost_detail,
             "summary": self.summary(),
             "results": [result.to_dict() for result in self.results],
+        }
+
+    @property
+    def latency_stats(self) -> dict[str, float]:
+        """Wall-clock per entry -- what a user actually waits."""
+        times = sorted(result.transcript.latency_seconds for result in self.results)
+        if not times:
+            return {}
+        return {
+            "median": round(times[len(times) // 2], 1),
+            "slowest": round(times[-1], 1),
+            "total": round(sum(times), 1),
         }
 
     def summary(self) -> dict[str, Any]:
@@ -133,7 +147,7 @@ def _retrieved_record(
     }
 
 
-def record_turn(question: str, answer: Any) -> TurnRecord:
+def record_turn(question: str, answer: Any, latency_seconds: float = 0.0) -> TurnRecord:
     """Capture one turn as the judge will read it."""
     rendered = answer.rendered
     markers = {
@@ -157,6 +171,7 @@ def record_turn(question: str, answer: Any) -> TurnRecord:
         stop_reason=answer.stop_reason,
         input_tokens=answer.input_tokens,
         output_tokens=answer.output_tokens,
+        latency_seconds=latency_seconds,
     )
 
 
@@ -169,7 +184,9 @@ def run_entry(agent: WikipediaAgent, entry: EvalEntry) -> Transcript:
     transcript = Transcript(entry_id=entry.id, category=entry.category, agent_model=agent.model)
     session = Session(agent=agent)
     for turn in entry.turns:
-        transcript.turns.append(record_turn(turn, session.ask(turn)))
+        started = time.monotonic()
+        answer = session.ask(turn)
+        transcript.turns.append(record_turn(turn, answer, time.monotonic() - started))
     return transcript
 
 
@@ -299,8 +316,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Entries passed: {summary['entries_passed']}/{summary['entries']}")
     for name, counts in summary["by_criterion"].items():
         print(f"  {name:24} {counts['passed']}/{counts['total']}  ({counts['rate']:.0%})")
+    latency = report.latency_stats
+    if latency:
+        print(f"\nlatency: median {latency['median']}s · slowest {latency['slowest']}s "
+              f"· total {latency['total']}s")
     print()
     print(tracker.summary())
+    print(f"cost per entry: ${tracker.total / max(1, len(report.results)):.4f}")
     print(f"\nJudge version: {report.judge_version}")
     print(f"Report:        {path}")
     return 0

@@ -171,6 +171,7 @@ class TurnRecord:
     stop_reason: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
+    latency_seconds: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -185,6 +186,7 @@ class TurnRecord:
             "stop_reason": self.stop_reason,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "latency_seconds": round(self.latency_seconds, 2),
         }
 
 
@@ -215,6 +217,10 @@ class Transcript:
     @property
     def output_tokens(self) -> int:
         return sum(turn.output_tokens for turn in self.turns)
+
+    @property
+    def latency_seconds(self) -> float:
+        return sum(turn.latency_seconds for turn in self.turns)
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -1,11 +1,14 @@
-"""The `python -m wikimedia_agent` entry point."""
+"""The command-line interface (§4, Phase 12).
+
+Reachable both as ``wikimedia-agent`` and ``python -m wikimedia_agent``.
+"""
 
 from __future__ import annotations
 
 import httpx
 import pytest
 
-import wikimedia_agent.__main__ as entry
+import wikimedia_agent.cli as entry
 from tests.helpers import (
     CONTACT,
     RecordedAnthropic,
@@ -44,7 +47,7 @@ def patched_agent(monkeypatch, api, grade="Start"):
         min_interval=0.0,
     )
     agent = WikipediaAgent(tools=WikipediaTools(client=wiki), client=api.client())
-    monkeypatch.setattr(entry, "build_agent", lambda: agent)
+    monkeypatch.setattr(entry, "build_agent", lambda **_kwargs: agent)
     return agent
 
 
@@ -98,14 +101,10 @@ def test_no_arguments_enters_the_interactive_loop(monkeypatch, capsys):
     assert "wikimedia-agent" in capsys.readouterr().out
 
 
-def test_help_exits_cleanly(capsys):
-    assert entry.main(["--help"]) == 0
-
-
 def test_configuration_error_is_reported_not_tracebacked(monkeypatch, capsys):
     from wikimedia_agent.errors import ConfigurationError
 
-    def boom():
+    def boom(**_kwargs):
         raise ConfigurationError("no contact configured")
 
     monkeypatch.setattr(entry, "build_agent", boom)
@@ -296,3 +295,81 @@ def test_sources_command_costs_no_api_call(monkeypatch):
     feed(monkeypatch, ["/sources"])
     entry.main([])
     assert api.call_count == 0
+
+
+# -- argument parsing and configuration (Phase 12) ------------------------
+
+
+def test_the_console_script_entry_point_is_importable():
+    """pyproject declares `wikimedia-agent = wikimedia_agent.cli:main`.
+
+    Regression: it was declared in Phase 0 and the module did not exist until
+    Phase 12, so the installed command failed with ImportError.
+    """
+    from wikimedia_agent.cli import main as cli_main
+
+    assert callable(cli_main)
+
+
+def test_python_m_and_the_console_script_share_an_entry_point():
+    import wikimedia_agent.__main__ as module
+    from wikimedia_agent.cli import main as cli_main
+
+    assert module.main is cli_main
+
+
+def test_version_flag_exits_cleanly(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        entry.main(["--version"])
+    assert excinfo.value.code == 0
+    assert "wikimedia-agent" in capsys.readouterr().out
+
+
+def test_help_flag_exits_cleanly():
+    with pytest.raises(SystemExit) as excinfo:
+        entry.main(["--help"])
+    assert excinfo.value.code == 0
+
+
+def test_retrieval_bounds_are_configurable(monkeypatch):
+    agent = patched_agent(monkeypatch, answering_api())
+    feed(monkeypatch, [])
+
+    entry.main(["--max-retrievals", "3", "--deadline", "12"])
+
+    assert agent.tools.budget.max_retrievals == 3
+    assert agent.tools.budget.deadline_seconds == 12.0
+
+
+def test_session_bounds_are_configurable(monkeypatch, capsys):
+    patched_agent(monkeypatch, answering_api())
+
+    captured = {}
+    real_interactive = entry.interactive
+
+    def spy(session):
+        captured["max_turns"] = session.max_turns
+        captured["token_budget"] = session.token_budget
+        return real_interactive(session)
+
+    monkeypatch.setattr(entry, "interactive", spy)
+    feed(monkeypatch, [])
+    entry.main(["--max-turns", "5", "--token-budget", "1234"])
+
+    assert captured == {"max_turns": 5, "token_budget": 1234}
+
+
+def test_a_question_argument_answers_once_without_a_session(monkeypatch, capsys):
+    patched_agent(monkeypatch, answering_api())
+
+    assert entry.main(["Who", "is", "Gerald", "J.", "Ford?"]) == 0
+    assert "Answer. [1]" in capsys.readouterr().out
+
+
+def test_help_command_lists_the_session_commands(monkeypatch, capsys):
+    patched_agent(monkeypatch, answering_api())
+    feed(monkeypatch, ["/help"])
+    entry.main([])
+    out = capsys.readouterr().out
+    assert "/sources" in out
+    assert "/new" in out

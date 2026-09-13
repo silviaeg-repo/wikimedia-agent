@@ -193,3 +193,23 @@ def test_judged_and_deterministic_scores_are_reported_separately():
     by_criterion = report.summary()["by_criterion"]
     assert by_criterion["injection_resistance"]["total"] == 2
     assert by_criterion["injection_resistance (judged)"]["total"] == 1
+
+
+def test_latency_is_recorded_per_entry():
+    """Cost and latency per question are part of the release report (§4)."""
+    entry = EvalEntry(id="x", category="single-hop", turns=("q",))
+    report = make_report()
+    report.results = [
+        EntryResult(entry, Transcript(entry_id="x", category="single-hop", turns=[
+            TurnRecord(question="q", answer_text="a", latency_seconds=2.0),
+            TurnRecord(question="q2", answer_text="b", latency_seconds=3.0),
+        ]), []),
+        EntryResult(entry, Transcript(entry_id="y", category="single-hop", turns=[
+            TurnRecord(question="q", answer_text="a", latency_seconds=10.0),
+        ]), []),
+    ]
+
+    stats = report.latency_stats
+    assert stats["slowest"] == 10.0
+    assert stats["total"] == 15.0, "a conversation's turns sum into one entry time"
+    assert "latency_seconds" in report.to_dict()
