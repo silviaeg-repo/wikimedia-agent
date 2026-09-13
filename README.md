@@ -68,14 +68,41 @@ export WIKIMEDIA_AGENT_CONTACT="you@example-domain.org"
 
 Use a real address or project URL you actually monitor.
 
-## Asking a question
+## Running the agent
 
-Set both variables, then ask:
+You need both variables set. The contact address is required by Wikimedia policy; the
+API key is required to call the model.
 
 ```bash
 export WIKIMEDIA_AGENT_CONTACT="you@example-domain.org"
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
+
+Then ask a question:
+
+```bash
+python -m wikimedia_agent "Who was Ada Lovelace, and what is she known for?"
+```
+
+Output:
+
+```
+Ada Lovelace was an English mathematician, chiefly known for her work on
+Charles Babbage's proposed Analytical Engine. [1]
+
+Sources
+  [1] Ada Lovelace — B
+      https://en.wikipedia.org/wiki/Ada_Lovelace
+
+1043 input / 118 output tokens · stopped: end_turn
+```
+
+Sources rated Start, Stub or Unassessed are marked `[!] low-quality source`.
+
+**This is the only thing in the project that costs money** — roughly a cent a question.
+If either variable is missing, it says so and exits rather than failing mid-question.
+
+### From Python
 
 ```python
 from wikimedia_agent.agent import build_agent
@@ -92,9 +119,10 @@ print(f"{answer.input_tokens} in / {answer.output_tokens} out")
 
 The agent retrieves before it answers, cites what it read, and declines rather than
 inventing. `answer.sources` is built from what was **actually retrieved**, not from what
-the model chose to mention.
+the model chose to mention — so an article that influenced the answer cannot go unlisted.
 
-This is the first thing in the project that costs money — roughly a cent a question.
+> A single-question command today; the conversational CLI with follow-ups and `/new`
+> arrives in Phase 12.
 
 ## Running the tests
 
@@ -221,6 +249,7 @@ QUALITY: Start -- Developing but quite incomplete. This is a low-quality source.
 | The three tools the model calls | `src/wikimedia_agent/tools.py` |
 | The agent loop | `src/wikimedia_agent/agent.py` |
 | The system prompt / grounding contract | `src/wikimedia_agent/prompts.py` |
+| Command-line entry point | `src/wikimedia_agent/__main__.py` |
 | Typed error hierarchy | `src/wikimedia_agent/errors.py` |
 | TTL response cache | `src/wikimedia_agent/cache.py` |
 | Constraint compliance checks | `tests/compliance/` |
