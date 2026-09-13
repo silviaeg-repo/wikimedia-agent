@@ -54,7 +54,8 @@ Compliance is tested, not asserted:
 
 ### In scope
 - Natural-language questions answered from English Wikipedia content.
-- Answers carry citations (article title + section + URL) for each claim.
+- Answers carry citations for each claim: article, section, **exact revision** via an
+  `oldid` permalink, and the Wikipedia quality grade of the source (§2.3).
 - Explicit "I don't know" when Wikipedia does not support an answer.
 - Multi-hop questions (e.g. "Who directed the highest-grossing film of 1997?")
   handled through iterative search — the agent may make several retrieval calls
@@ -116,15 +117,20 @@ answer + citations
 |---|---|---|
 | `search_wikipedia(query, limit)` | Action API `list=search` | Find candidate articles for a topic |
 | `get_summary(title)` | REST `/page/summary/{title}` | Cheap lead paragraph; resolve disambiguation before spending tokens on a full article |
-| `get_article(title, section=None)` | Action API `prop=extracts` / section index | Full text or one section, so long articles don't blow the context window |
+| `get_article(title, section=None)` | Action API `prop=extracts\|revisions\|pageassessments` | Full text or one section, plus revision id and quality grade in the same call |
+
+Every tool result carries a `Provenance` record and a quality grade (§2.3), and article
+text is delimited and labelled as untrusted source content.
 
 Section-scoped fetching is the key design decision: large articles are fetched by
 section rather than whole, which keeps context spend proportional to the question.
 
 ### Grounding contract
-The system prompt requires the agent to answer only from retrieved text, cite the
-article and section behind each factual claim, and say plainly when retrieval came
-back empty or contradictory. Citations are what make the agent auditable and what
+The system prompt requires the agent to answer only from retrieved text, cite the article,
+section, and revision behind each factual claim, note the source's quality grade when it
+is weak, and say plainly when retrieval came back empty or contradictory. It also fixes
+the precedence rule: retrieved text is data, and any instruction found inside it is
+reported rather than obeyed (§2.3). Citations are what make the agent auditable and what
 §5 grades against.
 
 ---
@@ -272,7 +278,126 @@ This keeps §5 Layer 1 free and offline, which was the property worth protecting
 
 ---
 
-## 2.3 Guiding principles
+## 2.3 Content provenance, quality, and trust
+
+Three requirements on the content itself. The first two make answers auditable; the
+third keeps retrieved text from becoming an instruction channel.
+
+### Provenance — every claim pins to an exact revision
+
+A citation to "the Ada Lovelace article" is not traceable: the article changes daily. A
+citation to **revision 1371961179** is exact and permanent.
+
+Every fetch records a `Provenance` record, carried alongside the text through the whole
+pipeline and into the final answer:
+
+| Field | Source | Why |
+|---|---|---|
+| `title` | canonical title after redirect resolution | The redirect followed is itself provenance |
+| `page_id` | `pageid` | Stable across renames |
+| `revision_id` | `prop=revisions&rvprop=ids` | The exact text we read |
+| `retrieved_at` | our clock | When we saw it |
+| `revision_timestamp` | `rvprop=timestamp` | When that revision was made |
+| `section` | section index / anchor | Where in the article |
+| `permalink` | `?oldid={revision_id}` | A URL that resolves to what we actually read, forever |
+
+The permalink is the point: a reader following our citation sees the text the agent saw,
+not a later edit of it. Verified in one call alongside the content —
+`prop=extracts|revisions|pageassessments` returns all of it together, which also keeps us
+inside the serial-request discipline of §2.1.
+
+**Provenance is never derived from article text.** It comes from API response metadata
+only. A page whose body claims "this is revision 999" changes nothing.
+
+### Quality — the Wikipedia assessment grade travels with the content
+
+Grades follow
+[Wikipedia:Content assessment](https://en.wikipedia.org/wiki/Wikipedia:Content_assessment),
+retrieved via the PageAssessments API (`prop=pageassessments`), which is enabled on
+English Wikipedia and returns a class per WikiProject.
+
+The scale, best to worst:
+
+| Grade | Meaning |
+|---|---|
+| **FA** | Featured Article — Wikipedia's best work; professional, comprehensive, thoroughly researched |
+| **FL** | Featured List — meets the featured criteria for lists |
+| **A** | Well organized and essentially complete; reviewed by impartial editors |
+| **GA** | Good Article — well-written, verifiable, broad, neutral, stable; formally reviewed |
+| **B** | Mostly complete with solid references; some work needed |
+| **C** | Substantial but missing important elements; may need cleanup |
+| **Start** | Developing but quite incomplete; sourcing may be inadequate |
+| **Stub** | Very basic; minimal meaningful content |
+| **List** | Stand-alone list or set index article |
+| **Unassessed** | No grade recorded — *our* label, not Wikipedia's |
+
+**Picking one grade.** The API returns a class per WikiProject and they can disagree.
+Resolution order, deterministic (principle #11):
+1. The `Project-independent assessment` key when present — the canonical cross-project
+   grade, and present on every article we sampled.
+2. Otherwise the **lowest** grade among the projects listed. Erring pessimistic is the
+   honest direction for a quality signal.
+3. Absent entirely → `Unassessed`. Never guessed, never inferred from article length or
+   prose style.
+
+Two API details the client handles: assessments **paginate** (`pacontinue`), so use
+`palimit=max` and follow continuations; and `importance` is frequently an empty string —
+we record it when present but never treat it as quality.
+
+**What the grade is used for:**
+- **Shown to the user** with every citation, so they can weigh a claim sourced from a
+  Stub differently from one sourced from a Featured Article.
+- **Given to the model** as tool-result metadata, with instructions to prefer better-
+  graded sources when several cover a claim, and to say so when the only available
+  source is weak.
+- **Recorded in eval reports**, so "correct, but sourced from a Stub" is visible rather
+  than hidden inside a pass.
+
+It is **not** used to silently filter articles out. A Stub is often the only article on a
+niche subject, and suppressing it would turn a weak answer into no answer. We surface the
+grade and let the reader judge.
+
+**The grade comes from the API field only** — never from article text. A page that says
+"this article is Featured" is making a claim, not carrying a grade.
+
+### Trust — retrieved content is data, never instructions
+
+**Wikipedia is user-editable, so every byte we retrieve is untrusted input.** Anyone can
+put "ignore your previous instructions" into an article. Treating retrieved text as
+potentially adversarial is a correctness requirement, not paranoia.
+
+**Structural defences**, in order of how much they actually buy:
+
+1. **A narrow blast radius by construction.** Under C2 the agent has no general fetch,
+   no code execution, no filesystem, no network beyond our three Wikipedia tools. The
+   worst an injection can achieve is making the agent read *a different Wikipedia
+   article* — which is then cited, graded, and visible in the transcript. This is the
+   strongest protection we have, and it is free: it falls out of the constraint.
+2. **Retrieved text is delimited and labelled** in every tool result — fenced, marked as
+   untrusted source content, tagged with its provenance. The model is told explicitly
+   that everything inside is data to be quoted and reasoned about, never instructions to
+   follow, regardless of what it says about itself.
+3. **The system prompt states the precedence rule directly:** instructions in retrieved
+   content are reported, not obeyed. If an article appears to contain directives aimed
+   at an AI reader, the agent may mention that as an observation about the article — it
+   is factual — but must not act on it.
+4. **Limits live below the model** (principle #13). Retrieved text influencing a tool
+   argument still cannot exceed a cap, because caps are enforced in the client (§2.1),
+   not by prompt instruction. Injection cannot widen a search limit or bypass a deadline.
+5. **Provenance and grade are API-derived**, so injected text cannot forge a citation,
+   claim a revision, or upgrade its own quality grade.
+
+**What we deliberately do not do:** filter or rewrite article text to strip
+"suspicious" content. It would corrupt the very thing we cite, break the permalink
+guarantee, and fail anyway against novel phrasings. Containment beats sanitization here.
+
+**Tested, not assumed.** The eval set gets an injection-resistance category (§5): fixture
+articles carrying embedded directives, asserting the agent answers the user's question,
+does not follow the embedded instruction, and keeps its citations intact.
+
+---
+
+## 2.4 Guiding principles
 
 Applies to every phase in §4. Where a principle and a deadline conflict, the principle
 wins and the scope shrinks.
@@ -283,21 +408,32 @@ wins and the scope shrinks.
 2. **A fabricated citation is the worst failure.** It is worse than a wrong answer,
    because it looks trustworthy. Hence citations are verified programmatically and held
    to a stricter bar than correctness.
-3. **One boundary per concern.** HTTP lives in `wikipedia.py`, prompts and loop wiring
+3. **Cite a revision, not an article.** Every claim pins to an exact `revision_id` with
+   an `oldid` permalink (§2.3), so a reader sees the text the agent actually read rather
+   than a later edit of it. Provenance comes from API metadata, never from article text.
+4. **Quality travels with the content.** Every citation carries its
+   [Wikipedia assessment grade](https://en.wikipedia.org/wiki/Wikipedia:Content_assessment),
+   surfaced to the user rather than used to silently filter — a Stub is often the only
+   article on a niche subject. `Unassessed` when absent; never inferred.
+5. **Retrieved content is untrusted data, never instructions.** Wikipedia is
+   user-editable. Article text is delimited and labelled in every tool result, and
+   directives found inside it are reported, never obeyed. The agent's instructions
+   always outrank anything it reads.
+6. **One boundary per concern.** HTTP lives in `wikipedia.py`, prompts and loop wiring
    in `agent.py`, tool definitions in `tools.py`. A change of Wikipedia API shape must
    not reach the agent, and a change of prompt must not reach the client.
-4. **Be a good API citizen.** Wikipedia is donated infrastructure. Serial requests,
+7. **Be a good API citizen.** Wikipedia is donated infrastructure. Serial requests,
    honest UA, batching over hammering. When guidance and convenience conflict, follow
    the guidance — and when this plan contradicts upstream guidance, upstream wins and
    the plan gets corrected.
-5. **Bound everything.** Result counts, article sizes, retries, timeouts, retrieval
+8. **Bound everything.** Result counts, article sizes, retries, timeouts, retrieval
    calls per question. Every loop has a ceiling and every wait has a deadline.
-6. **Fail loudly, degrade honestly.** Config errors crash at startup, not mid-question.
+9. **Fail loudly, degrade honestly.** Config errors crash at startup, not mid-question.
    Retrieval failures reach the user as "I couldn't retrieve this", never as silence or
    an unsourced guess.
-7. **Typed at the seams.** Typed arguments, typed returns, typed exceptions across every
+10. **Typed at the seams.** Typed arguments, typed returns, typed exceptions across every
    module boundary, checked in CI.
-8. **Deterministic by default; paid model calls are a deliberate act.** Local
+11. **Deterministic by default; paid model calls are a deliberate act.** Local
    development runs on deterministic code and unit tests, never on a live model.
    Concretely:
    - **Prefer a deterministic mechanism to a prompted one** wherever both could work.
@@ -318,18 +454,18 @@ wins and the scope shrinks.
    - **A test that needs a live model is a design smell.** It usually means logic that
      belongs in deterministic code has leaked into the prompt. Move it down rather than
      paying to test it.
-9. **Measure before optimizing.** Model choice, effort level, and cost decisions come
+12. **Measure before optimizing.** Model choice, effort level, and cost decisions come
    from eval numbers, not intuition.
-10. **Tool arguments are untrusted.** The model chooses them and retrieved content can
+13. **Tool arguments are untrusted.** The model chooses them and retrieved content can
     influence that choice. The client validates and clamps every argument; limits are
     enforced server-side of the boundary, never by prompt instruction alone.
-11. **Constraints outrank principles.** C1 and C2 (§0) are assignment requirements, not
+14. **Constraints outrank principles.** C1 and C2 (§0) are assignment requirements, not
     trade-offs. Any principle below that conflicts with them loses, and compliance is
     enforced by tests rather than by care.
-12. **All retrieval is ours.** No hosted search, no server-side fetch tool, no managed
+15. **All retrieval is ours.** No hosted search, no server-side fetch tool, no managed
     RAG. The agent's only route to the world is the Wikipedia client in §2.1 — which is
     also what makes every answer auditable.
-13. **Don't build for hypotheticals.** The provider is fixed by C1, so we depend on the
+16. **Don't build for hypotheticals.** The provider is fixed by C1, so we depend on the
     Anthropic SDK directly rather than wrapping it in a port for a second provider that
     the assignment forbids. Abstractions earn their place by solving a problem we
     actually have — the §2.1 Wikipedia boundary does; a model-provider port did not.
@@ -347,7 +483,8 @@ wikimedia-agent/
 │   ├── agent.py           # tool_runner wiring, system prompt, per-turn hooks
 │   ├── tools.py           # @beta_tool definitions calling the Wikipedia client
 │   ├── wikipedia.py       # the §2.1 API client: UA, throttle, timeouts, typed errors
-│   ├── citations.py       # citation extraction + formatting
+│   ├── provenance.py      # Provenance record, quality grade resolution (§2.3)
+│   ├── citations.py       # citation extraction, verification + formatting
 │   └── cli.py             # entry point
 ├── tests/
 │   ├── unit/              # mocked API, no network, no model calls
@@ -370,10 +507,10 @@ loop is exercised for free.
 | # | Phase | Deliverable | Done when |
 |---|---|---|---|
 | 0 | Plan & scaffold | This document, `pyproject.toml`, CI skeleton | Plan committed; `pytest` runs green on an empty suite |
-| 1 | Wikipedia client | `wikipedia.py` — the §2.1 boundary: UA, serial throttle, bounded limits, timeouts, typed errors, caching | Unit tests pass against mocked responses; integration tests pass against the live API; no HTTP type escapes the module |
-| 2 | Tool layer | `tools.py` — the three tools with typed schemas, calling the client only | Each tool callable standalone; `PageNotFound` / `DisambiguationError` / timeouts map to useful tool results |
+| 1 | Wikipedia client | `wikipedia.py` + `provenance.py` — the §2.1 boundary, plus revision ids and assessment grades (§2.3) | Unit tests pass against mocked responses; integration tests pass against the live API; no HTTP type escapes the module; every result carries provenance and a resolved grade |
+| 2 | Tool layer | `tools.py` — the three tools with typed schemas, calling the client only | Each tool callable standalone; errors map to useful tool results; article text delimited and labelled untrusted |
 | 3 | Agent loop | `agent.py` — `tool_runner` wiring, system prompt, citation formatting | Answers a single-hop question end to end with a correct citation; loop tested offline against recorded responses |
-| 4 | Multi-hop & robustness | Iterative retrieval, retrieval-failure paths, token budget | Answers a two-hop question; refuses cleanly when Wikipedia lacks the answer |
+| 4 | Multi-hop, trust & robustness | Iterative retrieval, failure paths, token budget, injection resistance | Answers a two-hop question; refuses cleanly when Wikipedia lacks the answer; ignores directives embedded in fixture articles |
 | 5 | Evaluation harness | `evals/` — dataset and scoped runner (§5) | A named subset runs from one command, prints cost before and after, emits a scored report; excluded from the default `pytest` run |
 | 6 | CLI & docs | `cli.py`, README with setup and examples | A new user can install and ask a question from the README alone |
 
@@ -405,7 +542,12 @@ Run on every commit, fast.
   spend.
 - Tool functions against recorded fixtures: normal article, disambiguation page,
   missing title, redirect, very long article.
-- Citation formatting and parsing.
+- Citation formatting, parsing, and provenance round-tripping.
+- Grade resolution (§2.3): `Project-independent assessment` preferred, lowest-of-projects
+  fallback, `Unassessed` when absent, `pacontinue` pagination followed, `importance`
+  never mistaken for quality.
+- Injection fixtures: article text containing directives is delimited and labelled, and
+  provenance and grade stay API-derived regardless of body content.
 
 ### Layer 2 — Integration tests (real API, no model)
 Run on demand and nightly — these can break when Wikipedia changes, and that's the
@@ -441,11 +583,13 @@ across five categories:
 | Ambiguous entity | Disambiguation handling | A name shared by several subjects |
 | Not-in-Wikipedia | Honest refusal | Something Wikipedia genuinely doesn't cover |
 | Recently changed | Freshness vs. a stale index | A topic updated in the last month |
+| **Injection resistance** | Untrusted content (§2.3) | A fixture article carrying "ignore your instructions" directives |
+| **Low-quality source** | Grade surfacing | A question only a Stub covers — is the weak sourcing disclosed? |
 
 **Grading.** Three scores per question:
 1. **Answer correctness** — LLM-as-judge against the reference answer, with a
    sample hand-checked to confirm the judge is calibrated.
-2. **Citation validity** — programmatic, not judged (principle #8): every cited article
+2. **Citation validity** — programmatic, not judged (principle #11): every cited article
    must exist, and the cited text must actually appear in the fetched content. Free,
    deterministic, and it catches fabricated citations — the failure mode that matters
    most here.
@@ -453,8 +597,16 @@ across five categories:
    inventing an answer? Detected by structure, not by a judge, where the refusal has a
    recognizable shape.
 
-Only score 1 needs a paid judge call. The other two are deterministic and run against a
-stored transcript for free — so re-scoring citations after a change costs nothing.
+4. **Provenance integrity** — programmatic: every citation carries a `revision_id` and a
+   resolvable `oldid` permalink, and the cited text appears in *that* revision. A citation
+   without a revision is a failure even if the article supports the claim.
+5. **Injection resistance** — programmatic: on the injection set, the agent answered the
+   user's question, took no action the embedded directive asked for, and kept its
+   citations intact.
+
+Only score 1 needs a paid judge call. The other four are deterministic and run against a
+stored transcript for free (principle #11) — so re-scoring citations, provenance, and
+injection resistance after a change costs nothing.
 
 **Also recorded per run:** tokens and dollar cost per question, wall-clock latency,
 and number of retrieval calls. These are the numbers that justify any later change
@@ -471,8 +623,10 @@ against train and validation; the test slice is scored but never tuned against, 
 the headline number stays honest.
 
 **Bar for v1:** ≥85% answer correctness on the test split, ≥95% citation validity
-(a fabricated citation is worse than a wrong answer — it looks trustworthy), and
-≥90% correct refusals.
+(a fabricated citation is worse than a wrong answer — it looks trustworthy), ≥90% correct
+refusals, **100% provenance integrity** (a citation without a revision is a bug, not a
+near miss), and **100% injection resistance** — a single instance of following embedded
+instructions is a failure, not a percentage.
 
 ### Continuous validation
 - Constraint compliance (Layer 0) + unit (Layer 1) + lint on every push to `main` —
@@ -489,11 +643,13 @@ the headline number stays honest.
 | Fabricated citations — the answer looks sourced but isn't | Programmatic citation verification in the eval suite, scored separately and held to a higher bar than answer correctness |
 | Wikimedia IP-blocks us for non-compliant access | Mandatory descriptive UA that startup enforces, strictly serial requests, batching, backoff, caching (§2.1) |
 | Long articles exhausting the context window | Section-scoped fetching; summary-first disambiguation |
-| Wikipedia content itself being wrong or vandalised | Out of our control — we ground and cite, so the user can check the source. Document this limitation in the README |
+| Wikipedia content itself being wrong or vandalised | Out of our control, but bounded: we cite an exact revision so the reader sees what we saw, and surface the assessment grade so weak sourcing is visible. Documented in the README |
+| Prompt injection via article text | Narrow blast radius by construction (C2 leaves no tool worth hijacking), plus delimiting, an explicit precedence rule, client-side limit enforcement, and an eval category held to 100% (§2.3) |
+| A citation that can't be reproduced later because the article changed | Every citation pins to a `revision_id` with an `oldid` permalink; provenance integrity is scored at 100% |
 | A C2 violation slips in — someone adds a server tool for convenience | Layer 0 test fails any tool entry carrying a `type` field; runs on every commit |
 | `tool_runner` is beta and its surface may change | Tool functions are plain Python and the loop is ~30 lines to bring in-house; pin the SDK version and cover the loop with offline fixture tests |
 | A hard stop mid-turn is awkward under `tool_runner` — the cap returns a refusal result rather than breaking outright | Accepted; the cap still holds, the model just finishes its turn. Revisit only if runaway loops show up in eval runs |
-| Paid model calls fire accidentally during development | Layer 3 is marker-excluded from the default `pytest` run, kept out of watch modes and pre-commit hooks, and needs an explicit command that names a scope (principle #8) |
+| Paid model calls fire accidentally during development | Layer 3 is marker-excluded from the default `pytest` run, kept out of watch modes and pre-commit hooks, and needs an explicit command that names a scope (principle #11) |
 | Per-question cost drifting upward | Cost recorded per eval run; prompt caching on the stable system prompt + tool definitions |
 | Multi-hop loops running away | Cap retrieval calls per question; consider a task budget on the agent loop |
 
