@@ -7,6 +7,50 @@ inline citations back to the source articles.
 
 ---
 
+## 0. Hard constraints
+
+These come from the assignment. They are not preferences and not subject to the
+engineering trade-offs elsewhere in this document — where a constraint and a design
+principle conflict, **the constraint wins and the design changes**.
+
+### C1 — An Anthropic model, via the Anthropic API
+The agent must be powered by an Anthropic model called through the Anthropic API
+(`POST /v1/messages`, via the official `anthropic` SDK).
+
+**Satisfied by:** `claude-opus-5` through `llm/anthropic.py` (§2.2).
+**Consequence:** Anthropic is the only *live* provider for this deliverable. See §2.2
+for what this means for the provider abstraction, which survives in reduced form.
+
+### C2 — No built-in hosted search or RAG tools
+All retrieval must be ours. Specifically **forbidden**:
+- Anthropic server tools: `web_search_*`, `web_fetch_*` tool types.
+- Any hosted RAG or search service (OpenAI browsing, Perplexity, Bing/Google APIs,
+  managed vector-store retrieval).
+- Server-side code execution used to fetch content, and MCP connectors that reach a
+  hosted search service.
+
+**Satisfied by:** retrieval is our own `httpx` client against the public Wikipedia API
+(§2.1), surfaced as ordinary user-defined tools we execute ourselves.
+
+**Explicitly permitted, and why it does not violate C2:** the Anthropic SDK's
+`tool_runner` helper (`client.beta.messages.tool_runner`). It is loop plumbing over
+`POST /v1/messages` and ships **no tools of its own** — no search, no fetch, no sandbox.
+It loops over tools we define and execute. Using it is using the Anthropic API (C1), and
+it adds no hosted retrieval capability (C2). Our reason for not using it is
+[architectural](#22-the-model-provider-boundary), not compliance.
+
+### Enforcing the constraints
+Compliance is tested, not asserted:
+- A test inspects the `tools` array sent on every request and **fails if any entry has a
+  `type` field** — user-defined tools carry `name` / `description` / `input_schema`,
+  while server tools are exactly the ones identified by `type`. This catches a forbidden
+  tool being added later by anyone.
+- A test asserts the configured provider is the Anthropic adapter and the model ID is an
+  Anthropic model.
+- CI runs both on every commit, so a C2 violation cannot merge quietly.
+
+---
+
 ## 1. Goal and scope
 
 ### In scope
@@ -19,13 +63,16 @@ inline citations back to the source articles.
 - A CLI for interactive use, and a Python API for embedding elsewhere.
 
 ### Out of scope (v1)
+- Any hosted search or RAG service, and any Anthropic server tool (C2).
+- A second live model provider — C1 fixes this to Anthropic (§2.2).
 - Languages other than English Wikipedia.
 - Other Wikimedia projects (Wikidata, Wiktionary, Commons).
 - Conversation memory across sessions / long multi-turn dialogue.
 - A web UI or hosted service.
 
 ### Non-goals
-- Not a general web-search agent. If it isn't in Wikipedia, the agent says so.
+- Not a general web-search agent. If it isn't in Wikipedia, the agent says so — and
+  under C2 it has no means to look anywhere else, by construction.
 - Not a Wikipedia mirror — no bulk dump ingestion, no local index to maintain.
 
 ---
@@ -37,9 +84,8 @@ ingestion pipeline, no index staleness. The cost is per-question latency. We mit
 it with caching and with batching several titles into one request — *not* with
 concurrency, which the API etiquette rules out (§2.1).
 
-**Stack:** Python 3.11+, `httpx` for the Wikipedia calls, `pytest` for tests. Vendor
-SDKs (`anthropic`, `openai`) are optional extras, imported only inside `llm/` (§2.2) —
-installing one provider must not require the other.
+**Stack:** Python 3.11+, the official `anthropic` SDK (C1), `httpx` for the Wikipedia
+calls, `pytest` for tests. The SDK is imported only inside `llm/` (§2.2).
 
 **Model:** reached only through the provider-agnostic port in §2.2, so the model is a
 config value rather than a code dependency. The default and reference implementation is
@@ -50,11 +96,23 @@ cheaper model or a lower effort setting holds quality — a measured decision, n
 upfront one.
 
 **Agent loop:** we own the request → tool-execute → loop cycle ourselves, in
-`agent.py`, written against the provider-agnostic port in §2.2. An earlier draft
-delegated this to the Anthropic SDK's `tool_runner`; that helper is Anthropic-specific,
-so keeping the model swappable means writing the loop ourselves. It is roughly thirty
-lines — a `while` over `stop_reason == "tool_use"` — and it stays identical across
-providers.
+`agent.py`, written against the port in §2.2 — roughly thirty lines, a `while` over
+`stop_reason == "tool_use"`.
+
+*This is a revisitable call.* An earlier draft used the Anthropic SDK's `tool_runner`;
+we replaced it to keep the model swappable, and C1 has since removed most of that
+motivation. `tool_runner` is fully C1/C2-compliant (§0) and would hand us correct
+handling of several protocol details we now own (below). We keep the hand-written loop
+because it preserves the fake-adapter testing path and gives a clean `break` for the
+retrieval-call cap, not because `tool_runner` is disallowed.
+
+Owning the loop means owning these, each covered by a conformance test (§5):
+- All `tool_result` blocks from one assistant turn go back in a **single** user message.
+  Splitting them silently suppresses parallel tool calls — no error, just worse behaviour.
+- A failed tool returns `tool_result` with `is_error: true`; the block is never dropped.
+- Assistant content blocks are echoed back unchanged, thinking blocks included.
+- Tool inputs are parsed with `json.loads`, never string-matched.
+- `stop_reason` is checked before reading content, `refusal` included.
 
 ```
 question
@@ -171,8 +229,21 @@ API load, and makes eval runs reproducible and cheap.
 ## 2.2 The model provider boundary
 
 Same principle as §2.1, applied to the model: all LLM access sits behind one narrow
-interface in `llm/`, so switching between Anthropic, OpenAI, or a local model is a
-config change, not a rewrite. `agent.py` imports the port, never a vendor SDK.
+interface in `llm/`. `agent.py` imports the port, never a vendor SDK.
+
+**C1 narrows this from its original intent.** The port was introduced so the agent could
+run against Anthropic, OpenAI, or a local model interchangeably. The assignment fixes the
+live provider to Anthropic, so that particular payoff is off the table for this
+deliverable. The boundary is still worth keeping, for two reasons that survive C1:
+
+1. **A fake adapter makes the agent loop testable with no network and no spend** — this
+   is the larger practical benefit, and it is unaffected by the constraint.
+2. **It keeps vendor details out of the agent**, which is ordinary good structure
+   regardless of how many providers ever exist.
+
+What changes: no OpenAI adapter is built for this deliverable, and cross-provider evals
+are out of scope. The port stays; the second live provider does not.
+If C1 were lifted, adding one is an adapter rather than a rewrite — which was the point.
 
 ### The port
 
@@ -209,17 +280,23 @@ enum and never on a vendor string.
 
 ### Adapters
 
-`llm/anthropic.py`, `llm/openai.py`, and `llm/fake.py`. Each one is responsible for all
+Two are built: `llm/anthropic.py` and `llm/fake.py`. Each is responsible for all
 translation in both directions, and vendor types never cross the boundary:
 
-- **Anthropic** — `content` blocks ↔ our blocks; `tool_use` / `tool_result` blocks;
-  `tools[].input_schema`. Sets adaptive thinking and prompt caching where configured.
-- **OpenAI** — `tool_calls` with **JSON-string** `arguments` (ours are parsed dicts, so
-  the adapter parses on the way in and serializes on the way out); tool results as
-  separate `role: "tool"` messages rather than content blocks; `finish_reason` mapped to
-  our `stop_reason`.
+- **Anthropic** (the only live adapter, per C1) — `content` blocks ↔ our blocks;
+  `tool_use` / `tool_result` blocks; `tools[].input_schema`. Sets adaptive thinking and
+  prompt caching where configured. Declares **only** user-defined tools — never a
+  `type`-carrying server tool (C2).
 - **Fake** — a scripted client returning canned turns. This is what makes the agent loop
-  testable with no network and no spend (§5, Layer 1).
+  testable with no network and no spend (§5, Layer 1), and it is the reason the port
+  earns its place even with a single live provider.
+
+*Not built for this deliverable:* an OpenAI adapter. C1 rules out a second live provider.
+Sketching what it would take is still useful as evidence the port isn't Anthropic-shaped
+— OpenAI returns `tool_calls` with **JSON-string** `arguments` where ours are parsed
+dicts, puts tool results in separate `role: "tool"` messages rather than content blocks,
+and calls the field `finish_reason`. All three are adapter-local translations, which is
+the test the port has to pass.
 
 Each adapter owns its own retry, timeout, and typed-error handling, mapping vendor
 exceptions to an `LLMError` hierarchy — the same discipline as §2.1.
@@ -264,10 +341,10 @@ an architectural commitment, and the agent loop becomes testable with zero spend
 - **A shared conformance suite** runs against every adapter: same tool-call round-trip,
   same error mapping, same `stop_reason` normalization. An adapter is "done" when it
   passes, not when it returns a string.
-- **Cross-provider evals.** The §5 harness takes the provider as a parameter, so the
-  same graded question set scores Claude and GPT side by side, with cost and latency per
-  question. This is the point of the abstraction: a model decision backed by our own
-  numbers on our own task.
+- **Cross-model evals.** The §5 harness takes the model as a parameter, so the same
+  graded question set scores Anthropic models and effort levels side by side, with cost
+  and latency per question — a model decision backed by our own numbers on our own task.
+  Cross-*provider* comparison is out of scope under C1.
 
 ---
 
@@ -303,8 +380,14 @@ wins and the scope shrinks.
 10. **Tool arguments are untrusted.** The model chooses them and retrieved content can
     influence that choice. The client validates and clamps every argument; limits are
     enforced server-side of the boundary, never by prompt instruction alone.
-11. **No vendor SDK above the port.** `import anthropic` and `import openai` appear only
-    inside `llm/`, enforced by a lint rule in CI — not by good intentions. The model is a
+11. **Constraints outrank principles.** C1 and C2 (§0) are assignment requirements, not
+    trade-offs. Any principle below that conflicts with them loses, and compliance is
+    enforced by tests rather than by care.
+12. **All retrieval is ours.** No hosted search, no server-side fetch tool, no managed
+    RAG. The agent's only route to the world is the Wikipedia client in §2.1 — which is
+    also what makes every answer auditable.
+13. **No vendor SDK above the port.** `import anthropic` appears only inside `llm/`,
+    enforced by a lint rule in CI — not by good intentions. The model is a
     config value, so provider choice stays a measured decision (§5) rather than an
     architectural commitment. Where providers genuinely differ, declare it in
     `Capabilities` rather than flattening to the lowest common denominator.
@@ -323,14 +406,14 @@ wikimedia-agent/
 │   ├── tools.py           # tool specs + handlers (no vendor types)
 │   ├── llm/               # the §2.2 model boundary
 │   │   ├── port.py        #   Protocol + Message/ToolSpec/AssistantTurn/Capabilities
-│   │   ├── anthropic.py   #   adapter (default)
-│   │   ├── openai.py      #   adapter
-│   │   └── fake.py        #   scripted adapter for tests
+│   │   ├── anthropic.py   #   the only live adapter (C1)
+│   │   └── fake.py        #   scripted adapter for tests (no network, no spend)
 │   ├── wikipedia.py       # the §2.1 API client: UA, throttle, timeouts, typed errors
 │   ├── citations.py       # citation extraction + formatting
 │   └── cli.py             # entry point
 ├── tests/
 │   ├── unit/              # mocked API, no network, no model calls
+│   ├── compliance/        # §0 constraint checks (C1, C2)
 │   ├── conformance/       # one suite, run against every LLM adapter
 │   └── integration/       # real API, recorded fixtures
 └── evals/
@@ -356,7 +439,7 @@ loop is exercised for free.
 | 5 | Multi-hop & robustness | Iterative retrieval, retrieval-failure paths, token budget | Answers a two-hop question; refuses cleanly when Wikipedia lacks the answer |
 | 6 | Evaluation harness | `evals/` — dataset and runner (§5) | Full suite runs, emits a scored report, per-question cost recorded |
 | 7 | CLI & docs | `cli.py`, README with setup and examples | A new user can install and ask a question from the README alone |
-| 8 | Second provider | `llm/openai.py` | Passes the same conformance suite; cross-provider eval numbers reported (§5) |
+| ~~8~~ | ~~Second provider~~ | Dropped — C1 fixes the live provider to Anthropic. The port (§2.2) keeps this an adapter-sized change if the constraint is ever lifted. | — |
 
 ---
 
@@ -376,6 +459,13 @@ Run on every commit, fast.
 - Tool functions against recorded fixtures: normal article, disambiguation page,
   missing title, redirect, very long article.
 - Citation formatting and parsing.
+
+### Layer 0 — Constraint compliance (no network, no model)
+The §0 checks, run first and on every commit because a violation invalidates the whole
+deliverable regardless of how well it scores:
+- No entry in the outbound `tools` array carries a `type` field (C2).
+- The configured client is the Anthropic adapter, with an Anthropic model ID (C1).
+- No hosted-retrieval dependency appears in `pyproject.toml`.
 
 ### Layer 1.5 — Adapter conformance (no network, no model)
 One suite, parameterized over every adapter, so "swappable" is a tested fact rather than
@@ -417,11 +507,11 @@ across five categories:
 and number of retrieval calls. These are the numbers that justify any later change
 to model or effort level.
 
-**Cross-provider runs.** The harness takes the provider as a parameter, so the same
-graded set scores each configured model side by side on correctness, citation validity,
-cost, and latency. This is the payoff of §2.2: the model decision comes from our numbers
-on our task, and re-running it after any provider releases a new model is one flag, not
-a migration.
+**Model comparison, within C1.** The harness takes the model as a parameter, so the same
+graded set can score Anthropic models against each other — Opus vs. a cheaper tier, or
+one effort level vs. another — on correctness, citation validity, cost, and latency.
+Cross-*provider* comparison is out of scope under C1; cross-*model* comparison is not,
+and it is where the cost question from §2 gets settled with numbers.
 
 **Data split.** The set is split train / validation / test. Prompt iteration happens
 against train and validation; the test slice is scored but never tuned against, so
@@ -432,7 +522,7 @@ the headline number stays honest.
 ≥90% correct refusals.
 
 ### Continuous validation
-- Unit + lint on every push to `main`.
+- Constraint compliance (Layer 0) + unit + lint on every push to `main`.
 - Integration tests nightly (they depend on a live third-party API).
 - Evals run manually before any release, and after any prompt or model change.
 
@@ -446,6 +536,8 @@ the headline number stays honest.
 | Wikimedia IP-blocks us for non-compliant access | Mandatory descriptive UA that startup enforces, strictly serial requests, batching, backoff, caching (§2.1) |
 | Long articles exhausting the context window | Section-scoped fetching; summary-first disambiguation |
 | Wikipedia content itself being wrong or vandalised | Out of our control — we ground and cite, so the user can check the source. Document this limitation in the README |
+| A C2 violation slips in — someone adds a server tool for convenience | Layer 0 test fails any tool entry carrying a `type` field; runs on every commit |
+| Hand-writing the loop reintroduces a protocol bug `tool_runner` would have avoided | Each protocol detail in §2 is a named conformance test; `tool_runner` stays available as a fallback since it is C1/C2-compliant |
 | The abstraction leaks — an adapter quietly behaves differently | Shared conformance suite (§5, Layer 1.5) plus a CI lint rule banning vendor imports above `llm/` |
 | The abstraction flattens away what makes a provider good | Provider-specific tuning lives in adapter config, and real differences are declared in `Capabilities` rather than hidden |
 | Per-question cost drifting upward | Cost recorded per eval run; prompt caching on the stable system prompt + tool definitions |
