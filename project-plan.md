@@ -297,8 +297,27 @@ wins and the scope shrinks.
    an unsourced guess.
 7. **Typed at the seams.** Typed arguments, typed returns, typed exceptions across every
    module boundary, checked in CI.
-8. **Test without the network or the model.** Layers 1 and 2 (§5) must stay runnable
-   offline and free. Only Layer 3 spends money, and it is opt-in.
+8. **Deterministic by default; paid model calls are a deliberate act.** Local
+   development runs on deterministic code and unit tests, never on a live model.
+   Concretely:
+   - **Prefer a deterministic mechanism to a prompted one** wherever both could work.
+     Clamping a limit, verifying a citation, parsing a disambiguation page, enforcing
+     the retrieval cap — all of these are code, because code is testable, repeatable,
+     and free. Asking the model to respect a rule is the fallback, not the default, and
+     never the only enforcement (see #10).
+   - **Layers 0 and 1 (§5) run offline and free** on every commit — including the agent
+     loop, which drives the real `tool_runner` against recorded fixtures (§2.2).
+     Layer 2 hits the live Wikipedia API but still costs nothing.
+   - **Only Layer 3 spends money, and it is opt-in.** Never wired into the default
+     `pytest` run, never triggered by a file save or a watch mode, never part of a
+     pre-commit hook. Running it is an explicit command.
+   - **Eval runs are small and scoped by default.** A named subset — one category, or a
+     handful of questions — is the normal invocation; the full set is reserved for
+     release checkpoints and prompt changes. Every run reports its own dollar cost, so
+     spend is observed rather than discovered later.
+   - **A test that needs a live model is a design smell.** It usually means logic that
+     belongs in deterministic code has leaked into the prompt. Move it down rather than
+     paying to test it.
 9. **Measure before optimizing.** Model choice, effort level, and cost decisions come
    from eval numbers, not intuition.
 10. **Tool arguments are untrusted.** The model chooses them and retrieved content can
@@ -355,7 +374,7 @@ loop is exercised for free.
 | 2 | Tool layer | `tools.py` — the three tools with typed schemas, calling the client only | Each tool callable standalone; `PageNotFound` / `DisambiguationError` / timeouts map to useful tool results |
 | 3 | Agent loop | `agent.py` — `tool_runner` wiring, system prompt, citation formatting | Answers a single-hop question end to end with a correct citation; loop tested offline against recorded responses |
 | 4 | Multi-hop & robustness | Iterative retrieval, retrieval-failure paths, token budget | Answers a two-hop question; refuses cleanly when Wikipedia lacks the answer |
-| 5 | Evaluation harness | `evals/` — dataset and runner (§5) | Full suite runs, emits a scored report, per-question cost recorded |
+| 5 | Evaluation harness | `evals/` — dataset and scoped runner (§5) | A named subset runs from one command, prints cost before and after, emits a scored report; excluded from the default `pytest` run |
 | 6 | CLI & docs | `cli.py`, README with setup and examples | A new user can install and ask a question from the README alone |
 
 ---
@@ -396,6 +415,21 @@ point of separating them.
   section-splits correctly.
 
 ### Layer 3 — Agent evals (real model, costs money)
+**The only layer that spends money, and it never runs by accident.** Excluded from the
+default `pytest` run by marker, absent from any watch mode or pre-commit hook, and
+invoked by an explicit command that names what to run:
+
+```
+python -m evals.run --category multi-hop --limit 5    # the normal invocation
+python -m evals.run --all                             # release checkpoints only
+```
+
+Small and scoped is the default: a category or a handful of questions while iterating,
+the full set reserved for release checkpoints and prompt changes. The runner **prints an
+estimated cost and the question count before starting**, and the actual dollar cost when
+it finishes, so spend is observed rather than discovered on a bill. Every run writes a
+timestamped report so results are comparable across changes.
+
 The question set lives in `evals/dataset.jsonl`, each entry carrying the question, a
 reference answer, and the article(s) that should be cited. Target ~40–60 questions
 across five categories:
@@ -411,11 +445,16 @@ across five categories:
 **Grading.** Three scores per question:
 1. **Answer correctness** — LLM-as-judge against the reference answer, with a
    sample hand-checked to confirm the judge is calibrated.
-2. **Citation validity** — programmatic, not judged: every cited article must exist,
-   and the cited text must actually appear in the fetched content. This catches
-   fabricated citations, which is the failure mode that matters most here.
+2. **Citation validity** — programmatic, not judged (principle #8): every cited article
+   must exist, and the cited text must actually appear in the fetched content. Free,
+   deterministic, and it catches fabricated citations — the failure mode that matters
+   most here.
 3. **Refusal correctness** — on the not-in-Wikipedia set, did it decline instead of
-   inventing an answer?
+   inventing an answer? Detected by structure, not by a judge, where the refusal has a
+   recognizable shape.
+
+Only score 1 needs a paid judge call. The other two are deterministic and run against a
+stored transcript for free — so re-scoring citations after a change costs nothing.
 
 **Also recorded per run:** tokens and dollar cost per question, wall-clock latency,
 and number of retrieval calls. These are the numbers that justify any later change
@@ -436,7 +475,8 @@ the headline number stays honest.
 ≥90% correct refusals.
 
 ### Continuous validation
-- Constraint compliance (Layer 0) + unit + lint on every push to `main`.
+- Constraint compliance (Layer 0) + unit (Layer 1) + lint on every push to `main` —
+  all free and offline.
 - Integration tests nightly (they depend on a live third-party API).
 - Evals run manually before any release, and after any prompt or model change.
 
@@ -453,6 +493,7 @@ the headline number stays honest.
 | A C2 violation slips in — someone adds a server tool for convenience | Layer 0 test fails any tool entry carrying a `type` field; runs on every commit |
 | `tool_runner` is beta and its surface may change | Tool functions are plain Python and the loop is ~30 lines to bring in-house; pin the SDK version and cover the loop with offline fixture tests |
 | A hard stop mid-turn is awkward under `tool_runner` — the cap returns a refusal result rather than breaking outright | Accepted; the cap still holds, the model just finishes its turn. Revisit only if runaway loops show up in eval runs |
+| Paid model calls fire accidentally during development | Layer 3 is marker-excluded from the default `pytest` run, kept out of watch modes and pre-commit hooks, and needs an explicit command that names a scope (principle #8) |
 | Per-question cost drifting upward | Cost recorded per eval run; prompt caching on the stable system prompt + tool definitions |
 | Multi-hop loops running away | Cap retrieval calls per question; consider a task budget on the agent loop |
 
