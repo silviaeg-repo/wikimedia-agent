@@ -1494,30 +1494,63 @@ follow-up resolution**, and **100% marker stability** — also renderer-enforced
 
 ### Baseline runs
 
-Recorded so later runs have something to move against. Judge version
-`claude-sonnet-5/1.0.0/effort=low` throughout.
+Judge version is pinned and stamped on every report; scores from different judge
+versions are never compared.
 
-| Run | Entries | Passed | Cost | Notes |
-|---|---|---|---|---|
-| Phase 8 | 12 | 10/12 | $0.40 | Both failures were scorer false alarms on refusal, since fixed |
-| Phase 10 | 17 | **17/17** | $0.66 | Every criterion 100%; the forced disambiguation path exercised for the first time |
+| Run | Entries | Passed | Cost | Judge | Notes |
+|---|---|---|---|---|---|
+| Phase 8 | 12 | 10/12 | $0.40 | 1.0.0 | Both failures were scorer false alarms on refusal |
+| Phase 10 | 17 | 17/17 | $0.66 | 1.0.0 | Forced disambiguation path exercised for the first time |
+| **Release** | **28** | **28/28** | **$1.62** | **1.1.0** | Every criterion 100%; no incomplete entries |
 
-**What the Phase 10 run established:**
+**The release run against §5's bar**
 
-- **The `DisambiguationError` path works end to end.** `amb-002` names the ambiguous
-  title directly, so `get_summary("Mercury")` raised, the agent asked with described
-  candidates, and **nothing was retrieved** — the disambiguation page was correctly not
-  cited.
-- **Naming the reading chosen happens unprompted.** `amb-003` opened "Taking mercury as
-  the chemical element", which §2.4 asks for and no scorer checks.
-- **The refusal fix holds.** Judged rather than phrase-matched, both entries pass.
+| Bar | Required | Measured |
+|---|---|---|
+| Answer correctness | ≥85% | 100% (28/28) |
+| Citation validity | ≥95% | 100% (26/26) |
+| Refusal correctness | ≥90% | 100% (2/2) |
+| Provenance integrity | 100% | 100% (6/6) |
+| Injection resistance | 100% | 100% (3 structural, 2 judged) |
+| Source disclosure | 100% | 100% (20/20) |
 
-**What 100% does not mean.** Seventeen entries, most written by the same hand that
-built the agent, is enough to catch regressions and not enough to measure quality. An
-eval where everything passes has stopped doing its main job, which is finding bugs.
-Reaching §5's bar means growing the set toward 40-60, and specifically toward cases
-whose answers are *not* obvious in advance — adversarial phrasings, subjects Wikipedia
-covers badly, questions where the reference itself is contested.
+Latency: median 11.7s, slowest 30.8s. Cost per entry: $0.058.
+
+### What a clean sweep does not mean
+
+Every criterion passed, and that is the least interesting fact about this run.
+
+**The eval set has not found a bug since the refusal scorer was fixed.** Every real defect
+in this project after that point was found another way:
+
+| Defect | Found by |
+|---|---|
+| Judge spend reported as $0.00 | Reading a run's output |
+| Source list leaking across turns | A user asking an unrelated question |
+| Ambiguity flagged as an unsupported claim | A user reading an answer |
+| Wikipedia grade jargon shown to readers | A user noticing it was meaningless |
+| Judge emitting unparseable JSON | A category being run for the first time |
+| Unjudged entries counted as passed | The same run's summary line |
+| Double-scoring in the re-scorer | Running it once |
+
+Not one came from a failing eval. That is what a regression suite is for — it holds
+ground that has already been taken — but it is worth being explicit that **this suite
+demonstrates the absence of regressions, not the presence of quality.**
+
+The reasons are structural, and no amount of green changes them:
+
+- **28 entries is a tenth of what would be needed** for the percentages to carry
+  statistical weight.
+- **Every entry was written by the same hand that built the agent**, with knowledge of how
+  it behaves. Cases whose answers are obvious in advance cannot surprise anyone.
+- **Entries were mostly added after the behaviour worked**, which inverts the usual order:
+  a test written to confirm known-good behaviour is a regression guard from birth.
+
+To make the set find things again it needs adversarial phrasings nobody anticipated,
+subjects Wikipedia covers badly or contradicts itself on, questions where the reference
+answer is itself contested, and — the one gap this session proved by example —
+**conversations that change subject**, which is the shape that exposed the cross-turn
+source leak and which the set still does not contain.
 
 ### Continuous validation
 - Constraint compliance (Layer 0) + unit (Layer 1) + lint on every push to `main` —

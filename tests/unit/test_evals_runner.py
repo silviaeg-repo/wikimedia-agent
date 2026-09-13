@@ -166,11 +166,12 @@ def test_an_empty_scope_reports_rather_than_running(capsys):
     assert "No entries matched" in capsys.readouterr().err
 
 
-def test_the_estimate_stays_in_the_right_order_of_magnitude():
-    """Calibrated against a full 12-entry run costing $0.40 judged. An estimate
-    should err high, but a 2x overshoot stops being informative."""
-    projected = estimate(12, "claude-opus-5", "claude-sonnet-5", judged=True)
-    assert 0.40 <= projected <= 0.80, projected
+def test_the_estimate_errs_high_against_the_measured_run():
+    """The 28-entry run cost $1.62. An estimate that undershoots is the worse
+    direction, so it must sit above that -- but not wildly above, or it stops
+    being informative."""
+    projected = estimate(28, "claude-opus-5", "claude-sonnet-5", judged=True)
+    assert 1.62 <= projected <= 3.00, projected
 
 
 def test_judged_and_deterministic_scores_are_reported_separately():
