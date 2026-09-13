@@ -81,6 +81,21 @@ class Grade(Enum):
     def description(self) -> str:
         return _DESCRIPTIONS[self]
 
+    @property
+    def reliability(self) -> str:
+        """Plain-language description, for readers.
+
+        "Start-class" is Wikipedia's internal vocabulary and means nothing to
+        most people; "brief, may be incomplete" tells them what they actually
+        need to know about a source they are being asked to trust.
+        """
+        return _RELIABILITY[self]
+
+    @property
+    def short_label(self) -> str:
+        """A compact form for an inline marker, where space is tight."""
+        return _SHORT_LABELS[self]
+
 
 _LABELS = {
     Grade.FA: "FA",
@@ -106,6 +121,32 @@ _DESCRIPTIONS = {
     Grade.START: "Developing but quite incomplete",
     Grade.STUB: "Very basic; minimal meaningful content",
     Grade.UNASSESSED: "No grade recorded",
+}
+
+_RELIABILITY = {
+    Grade.FA: "thorough, and reviewed by Wikipedia editors",
+    Grade.FL: "thorough, and reviewed by Wikipedia editors",
+    Grade.A: "thorough and well organised",
+    Grade.GA: "solid, and reviewed by Wikipedia editors",
+    Grade.B: "well developed",
+    Grade.C: "reasonably developed, with some gaps",
+    Grade.LIST: "a list article",
+    Grade.START: "brief, and may be incomplete or thinly sourced",
+    Grade.STUB: "very brief — little more than a basic description",
+    Grade.UNASSESSED: "not yet rated by Wikipedia editors, so its depth is unknown",
+}
+
+_SHORT_LABELS = {
+    Grade.FA: "thorough",
+    Grade.FL: "thorough",
+    Grade.A: "thorough",
+    Grade.GA: "solid",
+    Grade.B: "well developed",
+    Grade.C: "developed",
+    Grade.LIST: "list",
+    Grade.START: "brief source",
+    Grade.STUB: "very brief source",
+    Grade.UNASSESSED: "unrated source",
 }
 
 _BY_NAME = {

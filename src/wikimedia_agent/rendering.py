@@ -22,8 +22,9 @@ CITATION = re.compile(r"\[\[([^\]|]+?)\]\]")
 
 POOR_MARKER = "⚠"  # warning sign
 FOOTER_NOTE = (
-    f"{POOR_MARKER} Sources marked {POOR_MARKER} are rated below Wikipedia's B-class "
-    "standard. Claims drawn from them may be incomplete or inadequately sourced."
+    f"{POOR_MARKER} Wikipedia editors rate their own articles for depth and sourcing. "
+    f"Articles marked {POOR_MARKER} above are rated among the least developed, so "
+    "anything drawn from them is worth double-checking."
 )
 UNKNOWN_MARKER = "[?]"
 
@@ -43,17 +44,17 @@ class Citation:
 
     def marker(self) -> str:
         if self.is_poor:
-            return f"[{self.number} {POOR_MARKER} {self.grade.label}-class]"
+            return f"[{self.number} {POOR_MARKER} {self.grade.short_label}]"
         return f"[{self.number}]"
 
     def line(self) -> str:
         where = self.provenance.title
         if self.provenance.section:
             where = f"{where} § {self.provenance.section}"
-        flag = f"  {POOR_MARKER} low-quality source" if self.is_poor else ""
-        status = "" if self.cited else "  (consulted, not cited)"
+        flag = f"{POOR_MARKER} " if self.is_poor else ""
+        status = "  (consulted, not cited)" if not self.cited else ""
         return (
-            f"  [{self.number}] {where} — {self.grade.label}-class{flag}{status}\n"
+            f"  [{self.number}] {where} — {flag}{self.grade.reliability}{status}\n"
             f"      {self.provenance.article_url}"
         )
 

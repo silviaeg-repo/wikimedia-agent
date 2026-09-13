@@ -75,15 +75,23 @@ def test_answer_and_sources_are_printed(monkeypatch, capsys):
 def test_low_quality_sources_are_flagged(monkeypatch, capsys):
     patched_agent(monkeypatch, answering_api(), grade="Start")
     entry.main(["question"])
-    assert "low-quality source" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "may be incomplete" in out
+    assert "\u26a0" in out
 
 
 def test_good_quality_sources_are_not_flagged(monkeypatch, capsys):
     patched_agent(monkeypatch, answering_api(), grade="GA")
     entry.main(["question"])
     out = capsys.readouterr().out
-    assert "GA" in out
-    assert "low-quality source" not in out
+    assert "reviewed by Wikipedia editors" in out
+    assert "\u26a0" not in out
+
+
+def test_the_cli_prints_no_grade_jargon(monkeypatch, capsys):
+    patched_agent(monkeypatch, answering_api(), grade="Start")
+    entry.main(["question"])
+    assert "-class" not in capsys.readouterr().out
 
 
 def test_no_retrieval_is_stated_rather_than_left_blank(monkeypatch, capsys):
@@ -279,7 +287,8 @@ def test_sources_command_lists_the_session_registry(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Articles used in this conversation" in out
     assert "Gerald J. Ford" in out
-    assert "low-quality source" in out
+    assert "may be incomplete" in out
+    assert "-class" not in out
 
 
 def test_sources_command_before_any_question(monkeypatch, capsys):

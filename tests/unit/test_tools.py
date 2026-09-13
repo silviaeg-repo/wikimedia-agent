@@ -98,15 +98,25 @@ def test_envelope_carries_provenance_the_content_cannot_forge(clock):
 def test_poor_quality_is_announced_to_the_model(clock):
     tools = tools_with(lambda _r: json_response(page_body(grade="Stub")), clock)
     result = tools.article("Ada Lovelace")
-    assert "low-quality source" in result
-    assert "QUALITY: Stub" in result
+    assert "SOURCE RELIABILITY" in result
+    assert "very brief" in result
+    assert "tell the user the source is thin" in result
 
 
 def test_adequate_quality_is_stated_without_a_warning(clock):
     tools = tools_with(lambda _r: json_response(page_body(grade="B")), clock)
     result = tools.article("Ada Lovelace")
-    assert "QUALITY: B" in result
-    assert "low-quality source" not in result
+    assert "SOURCE RELIABILITY" in result
+    assert "well developed" in result
+    assert "thin" not in result
+
+
+def test_the_model_is_told_not_to_echo_grade_names(clock):
+    """The model tends to repeat this line verbatim, so it must not contain
+    jargon a reader would not understand."""
+    tools = tools_with(lambda _r: json_response(page_body(grade="Start")), clock)
+    result = tools.article("Ada Lovelace")
+    assert "not as a Wikipedia grade name" in result
 
 
 # -- failures become next steps, never exceptions --------------------------

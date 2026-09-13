@@ -454,6 +454,29 @@ what informed the answer is complete.
 **Recorded in eval reports**, so "correct, but sourced from a Stub" is visible rather
 than hidden inside a pass.
 
+### Grades are internal; readers get plain language
+
+*Added after Phase 12, from use.* Answers were saying "this is a Start-class article",
+which is Wikipedia's internal vocabulary and tells a reader nothing about whether to
+trust the claim. Every grade now carries a plain-language description, and that is what
+reaches the reader:
+
+| Grade | What the reader sees |
+|---|---|
+| FA / FL / A | thorough, and reviewed by Wikipedia editors |
+| GA | solid, and reviewed by Wikipedia editors |
+| B | well developed |
+| C | reasonably developed, with some gaps |
+| Start | ⚠ brief, and may be incomplete or thinly sourced |
+| Stub | ⚠ very brief — little more than a basic description |
+| Unassessed | ⚠ not yet rated by Wikipedia editors, so its depth is unknown |
+
+Inline markers use a compact form — `[2 ⚠ brief source]`. The grade names remain in the
+data, the transcripts and the eval reports, where precision matters and the audience
+knows what they mean; they are absent from anything a user reads. The tool result the
+model sees is phrased the same way, since the model tends to echo it, and the prompt says
+explicitly not to use grade names.
+
 **The grade comes from the API field only** — never from article text. A page that says
 "this article is Featured" is making a claim, not carrying a grade.
 

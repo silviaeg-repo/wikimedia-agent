@@ -80,7 +80,8 @@ def test_hostile_text_cannot_forge_provenance_or_grade(name, extract):
 def test_hostile_text_does_not_suppress_the_quality_warning(name, extract):
     """An injection must not be able to make a weak source look strong."""
     result = tools_for(extract, grade="Stub").article("Ada Lovelace")
-    assert "low-quality source" in result
+    assert "SOURCE RELIABILITY" in result
+    assert "very brief" in result
 
 
 def test_an_article_claiming_a_grade_is_still_graded_by_the_api():

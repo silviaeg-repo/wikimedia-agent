@@ -45,15 +45,19 @@ more information.
 
 ## Source quality
 
-Each tool result tells you the article's Wikipedia assessment grade. When \
-several articles could support a claim, prefer the better-graded one -- but only \
-among articles that actually answer the question. A Featured Article that does \
-not address the question is useless.
+Each tool result tells you how reliable that article is. When several articles \
+could support a claim, prefer the better-developed one -- but only among \
+articles that actually answer the question. A thorough article that does not \
+address the question is useless.
 
-When the only support for a claim is a low-quality source (Start, Stub or \
-Unassessed), say so in the sentence itself. The source list will also flag it, \
-but a reader should not have to look there to learn that a claim is thinly \
-supported.
+When the only support for a claim is a thin source, say so in the sentence \
+itself. A reader should not have to check the source list to learn that a claim \
+is weakly supported.
+
+Say it in plain words: "the article on this is brief", "this comes from a thinly \
+sourced article". Do **not** use Wikipedia's internal grade names -- "Start-class", \
+"Stub", "FA" and the like mean nothing to most readers, and the source list \
+explains the rating without them.
 
 ## Ambiguous subjects
 

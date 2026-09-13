@@ -14,6 +14,7 @@ import sys
 from . import __version__
 from .agent import DEFAULT_MAX_ITERATIONS, DEFAULT_MODEL, build_agent
 from .errors import ConfigurationError
+from .rendering import POOR_MARKER
 from .session import DEFAULT_MAX_HISTORY_TURNS, DEFAULT_TOKEN_BUDGET, Session
 from .tools import DEFAULT_DEADLINE_SECONDS, DEFAULT_MAX_RETRIEVALS
 
@@ -158,9 +159,9 @@ def print_sources(session: Session) -> None:
 
     print("Articles used in this conversation:")
     for article in articles:
-        flag = "  [!] low-quality source" if article.is_poor else ""
+        flag = f"{POOR_MARKER} " if article.is_poor else ""
         print(f"  [{article.marker}] {article.provenance.title} — "
-              f"{article.grade.label}-class{flag}")
+              f"{flag}{article.grade.reliability}")
         print(f"      {article.provenance.article_url}")
     print()
 

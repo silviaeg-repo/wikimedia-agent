@@ -154,13 +154,20 @@ def _envelope(kind: str, attributes: dict[str, object], body: str) -> str:
 
 
 def _quality_note(grade: Grade) -> str:
+    """How reliable this source is, phrased as the user should hear it.
+
+    The model tends to echo this line, so it is written in plain language:
+    "Start-class" is Wikipedia's internal vocabulary and means nothing to a
+    reader being asked to judge a source (§2.3).
+    """
     if grade.is_poor:
         return (
-            f"QUALITY: {grade.label} -- {grade.description}. This is a low-quality "
-            "source. Prefer a better-graded article if one covers the claim, and say "
-            "so if this is the only support you have."
+            f"SOURCE RELIABILITY: this article is {grade.reliability}. Prefer a "
+            "better-developed article if one covers the claim. If this is your only "
+            "support, tell the user the source is thin -- in those plain words, not as "
+            f"a Wikipedia grade name like \"{grade.label}-class\"."
         )
-    return f"QUALITY: {grade.label} -- {grade.description}."
+    return f"SOURCE RELIABILITY: this article is {grade.reliability}."
 
 
 @dataclass

@@ -149,18 +149,19 @@ Output:
 
 ```
 Ada Lovelace wrote the first published algorithm intended for a machine. [1]
-A brief article describes Gerald J. Ford's later account of it. [2 ⚠ Start-class]
+Gerald J. Ford later described it, though only briefly. [2 ⚠ brief source]
 
 Sources
-  [1] Ada Lovelace — B-class
+  [1] Ada Lovelace — well developed
       https://en.wikipedia.org/wiki/Ada_Lovelace
-  [2] Gerald J. Ford — Start-class  ⚠ low-quality source
+  [2] Gerald J. Ford — ⚠ brief, and may be incomplete or thinly sourced
       https://en.wikipedia.org/wiki/Gerald_J._Ford
-  [3] Charles Babbage — GA-class  (consulted, not cited)
+  [3] Charles Babbage — solid, and reviewed by Wikipedia editors  (consulted, not cited)
       https://en.wikipedia.org/wiki/Charles_Babbage
 
-⚠ Sources marked ⚠ are rated below Wikipedia's B-class standard. Claims drawn
-from them may be incomplete or inadequately sourced.
+⚠ Wikipedia editors rate their own articles for depth and sourcing. Articles
+marked ⚠ above are rated among the least developed, so anything drawn from them
+is worth double-checking.
 
 1043 input / 118 output tokens · stopped: end_turn
 ```
@@ -169,8 +170,10 @@ Three things there are produced by code, not by the model:
 
 - **The numbering.** The model cites by article title (`[[Ada Lovelace]]`); the renderer
   assigns and keeps the numbers. The model cannot renumber or misattribute them.
-- **The `⚠` flags**, derived from the grade recorded at retrieval time. A weak source
-  cannot go unflagged because the model forgot to mention it.
+- **The `⚠` flags**, derived from the quality rating recorded at retrieval time. A weak
+  source cannot go unflagged because the model forgot to mention it. Ratings are
+  described in plain words — Wikipedia's own grade names ("Start-class", "FA") are
+  internal vocabulary and never reach the reader.
 - **The source list**, built from what was actually retrieved — so an article that was
   read but not cited still appears, marked *consulted, not cited*.
 
@@ -347,9 +350,12 @@ claiming to be Featured, or claiming a revision number, changes neither. That is
 stops page content from forging its own credibility — tested with a fixture that tries.
 
 **Quality warnings are produced by code, not by the model.** The model cites by title;
-the renderer assigns numbers and adds the `⚠` from the grade recorded at retrieval time.
+the renderer assigns numbers and adds the `⚠` from the rating recorded at retrieval time.
 If flagging depended on the model remembering, it would be forgotten on exactly the long
-multi-source answers where it matters most.
+multi-source answers where it matters most. The ratings come from
+[Wikipedia's own content assessment](https://en.wikipedia.org/wiki/Wikipedia:Content_assessment)
+but are surfaced in plain language, since a reader judging a source should not have to
+learn Wikipedia's grading scheme first.
 
 **Retrieved text is fenced and labelled untrusted**, and our own fence tags appearing in
 article text are escaped so the boundary cannot be forged from within. This is delimiter

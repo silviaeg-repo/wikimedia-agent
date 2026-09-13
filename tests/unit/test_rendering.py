@@ -48,7 +48,16 @@ def test_poor_sources_decorate_the_inline_marker(grade):
     is easy to read past on a multi-claim answer."""
     out = render("A claim. [[Ada Lovelace]]", [prov()], {974: grade})
     body = out.text.split("Sources")[0]
-    assert f"[1 {POOR_MARKER} {grade.label}-class]" in body
+    assert f"[1 {POOR_MARKER} {grade.short_label}]" in body
+
+
+@pytest.mark.parametrize("grade", list(Grade))
+def test_no_wikipedia_grade_jargon_reaches_the_reader(grade):
+    """"Start-class" means nothing to most people (§2.3)."""
+    out = render("A claim. [[Ada Lovelace]]", [prov()], {974: grade})
+    assert "-class" not in out.text
+    for jargon in ("FA", "GA", "Stub-", "Start-"):
+        assert f"{jargon}-class" not in out.text
 
 
 def test_an_unassessed_source_counts_as_poor():
@@ -67,7 +76,7 @@ def test_only_poor_sources_are_decorated_in_a_mixed_answer():
     )
     body = out.text.split("Sources")[0]
     assert "[1]" in body
-    assert f"[2 {POOR_MARKER} Start-class]" in body
+    assert f"[2 {POOR_MARKER} {Grade.START.short_label}]" in body
 
 
 # -- the footer note -------------------------------------------------------
@@ -159,14 +168,16 @@ def test_the_source_list_names_the_section_when_scoped():
     assert "Ada Lovelace § Death" in out.text
 
 
-def test_every_source_line_carries_a_grade():
+def test_every_source_line_describes_its_reliability_in_plain_words():
     out = render(
         "A. [[Ada Lovelace]]",
         [prov(), prov("Gerald J. Ford", 7, 99)],
         {974: Grade.B, 7: Grade.START},
     )
-    assert "B-class" in out.text
-    assert "Start-class" in out.text
+    assert Grade.B.reliability in out.text
+    assert Grade.START.reliability in out.text
+    assert "well developed" in out.text
+    assert "may be incomplete" in out.text
 
 
 # -- fabricated citations --------------------------------------------------
