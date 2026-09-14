@@ -352,10 +352,14 @@ Two rules the harness follows, both learned the hard way:
 
 ## How this was built
 
-The full conversation that produced this project is in
-[`docs/transcript/`](docs/transcript/) — every phase, including the decisions that were
-later reversed and why. The commit history records what changed; the transcript records
-how it was argued.
+[`docs/prompt-engineering-approach.md`](docs/prompt-engineering-approach.md) — the
+author's write-up of the prompt-engineering decisions: what was pushed into the prompt
+(semantic judgement) versus into code (anything mechanically checkable), how the eval
+suite was designed, and what the limitations are.
+
+[`docs/transcript/`](docs/transcript/) — the full conversation that produced the project,
+every phase included, with the decisions that were later reversed and why. The commit
+history records what changed; the transcript records how it was argued.
 
 ## How it's built
 
